@@ -31,29 +31,29 @@ Generate standard MP4s from COSM output streams. Standalone utility for parsing 
 Development checklist and implementation status:
 
 ### Core Functionality
-- [ ] Manifest parsing and validation
-  - [ ] XML manifest discovery and parsing
-  - [ ] Clip boundary identification
-  - [ ] Temporal sequence validation
-  - [ ] Frame index tracking
+- [x] Manifest parsing and validation
+  - [x] XML manifest discovery and parsing
+  - [x] Clip boundary identification
+  - [x] Temporal sequence validation
+  - [x] Frame index tracking
 
-- [ ] Input validation and analysis
-  - [ ] Directory structure verification
-  - [ ] Meta.json parsing and validation
-  - [ ] Segment integrity checking
-  - [ ] Missing segment detection
-  - [ ] Storage requirement estimation
+- [x] Input validation and analysis
+  - [x] Directory structure verification
+  - [x] Meta.json parsing and validation
+  - [x] Segment integrity checking
+  - [x] Missing segment detection
+  - [x] Storage requirement estimation
 
-- [ ] Stream processing
-  - [ ] Segment concatenation
-  - [ ] Tile extraction and alignment
-  - [ ] Overlap region handling
-  - [ ] Frame assembly
+- [x] Stream processing
+  - [x] Segment concatenation
+  - [x] Tile extraction and alignment
+  - [x] Overlap region handling
+  - [x] Frame assembly
 
-- [ ] Output generation
-  - [ ] Full resolution export
-  - [ ] Multi-resolution output support
-  - [ ] Encoder optimization
+- [x] Output generation
+  - [x] Full resolution export
+  - [x] Multi-resolution output support
+  - [x] Encoder optimization
 
 ### CLI Interface
 - [ ] Interactive mode with guided workflow
@@ -62,20 +62,22 @@ Development checklist and implementation status:
 - [ ] Error handling and user feedback
 
 ### System Integration
-- [ ] FFmpeg availability verification
-- [ ] Codec support validation
-- [ ] Basic system requirement checking
-- [ ] Windows compatibility testing
+- [x] FFmpeg availability verification
+- [x] Codec support validation
+- [x] Basic system requirement checking
+- [x] Windows compatibility testing
 
 ### Optional Enhancements
-- [ ] Self-test command
-- [ ] Configuration persistence
-- [ ] Resumable conversions
-- [ ] Log file generation
-- [ ] Update checking
-- [ ] Multiple output format support
-- [ ] Custom encoder settings
-- [ ] Batch processing mode
+highest->lowest priority P0, P1, P2, P3
+- [ ] Job name (P0) (use for logfile name, writing job parameters to a textfile in the output dir)
+- [ ] Self-test command (P0)
+- [ ] Configuration persistence (P2) (this seems like a good idea. maybe json config file (easier to provide lists vs. yaml) but this is optional, and this is primarily a CLI tool, flags + interactive mode provides plenty of flexibility)
+- [ ] Resumable conversions (P3) (less important, this seems difficult to implement)
+- [ ] Log file generation (P0)
+- [ ] Update checking (P1) (how would we do this? not sure that we want to deploy to pypi, simpler to just stick with a git repo)
+- [ ] Multiple output format support (P2) (less important-- MP4 is always good, just need to make res/framerate/crf configurable, allowing multiple outputs for the same clip)
+- [ ] Custom encoder settings (P3)
+- [ ] Batch processing mode (P3) (not sure what this really means in this context, we already try to process everything in the input directory, and generally this tool won't be deployed to clusters)
 
 ## Installation
 [Installation instructions TBD]
