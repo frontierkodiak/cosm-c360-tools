@@ -4,14 +4,12 @@ import argparse
 from pathlib import Path
 import sys
 import logging
-
 from typing import Optional
 
 from .utils import (
     init_logging,
     load_config,
     save_config,
-    self_test,
     check_updates,
     check_ffmpeg,
     print_info,
@@ -20,7 +18,6 @@ from .utils import (
     print_success
 )
 
-# questionary is optional, ensure safe import:
 try:
     import questionary
 except ImportError:
@@ -37,15 +34,11 @@ def parse_args():
     parser.add_argument("--interactive", action="store_true", help="Run in interactive mode")
     parser.add_argument("--self-test", action="store_true", help="Run a self-test and exit")
     parser.add_argument("--check-updates", action="store_true", help="Check for updates and exit")
+    parser.add_argument("--job-name", type=str, help="A name for this job, used for logs and output notes")
 
     return parser.parse_args()
 
 def run_interactive_mode(config: dict) -> dict:
-    """
-    Run an interactive session to gather input_dir, output_dir, and other settings.
-    Uses questionary for cross-platform interactive prompts.
-    If questionary not installed, fallback is to print an error and exit.
-    """
     if questionary is None:
         print_error("Interactive mode requested but 'questionary' is not installed.")
         sys.exit(1)
@@ -67,7 +60,10 @@ def run_interactive_mode(config: dict) -> dict:
     # Confirm ffmpeg available
     if not check_ffmpeg():
         print_warning("FFmpeg not found. Please install it before proceeding.")
-        questionary.confirm("Do you want to continue anyway?", default=False).ask()
+        cont = questionary.confirm("Do you want to continue anyway?", default=False).ask()
+        if not cont:
+            print_info("Aborting due to missing FFmpeg.")
+            sys.exit(1)
 
     # Prompt for log level
     log_level = questionary.select(
@@ -76,15 +72,24 @@ def run_interactive_mode(config: dict) -> dict:
         default=config.get("log_level", "INFO")
     ).ask()
 
+    # Prompt for job name
+    job_name = questionary.text(
+        "Job name (optional):",
+        default=str(config.get("job_name", ""))
+    ).ask()
+
     config["input_dir"] = input_dir
     config["output_dir"] = output_dir
     config["log_level"] = log_level
+    if job_name:
+        config["job_name"] = job_name
 
-    # Confirm final settings
     print_info("Review your settings:")
     print_info(f"  Input Directory: {config['input_dir']}")
     print_info(f"  Output Directory: {config['output_dir']}")
     print_info(f"  Log Level: {config['log_level']}")
+    if "job_name" in config:
+        print_info(f"  Job Name: {config['job_name']}")
     confirm = questionary.confirm("Proceed with these settings?", default=True).ask()
 
     if not confirm:
@@ -111,19 +116,14 @@ def main():
         config["output_dir"] = args.output_dir
     if args.manifest:
         config["manifest"] = args.manifest
+    if args.job_name:
+        config["job_name"] = args.job_name
 
     # Initialize logging
     logfile = Path(config["log_file"]) if "log_file" in config else None
     logger = init_logging(level=config.get("log_level", "INFO"), logfile=logfile)
 
     # Handle special commands first
-    if args.self_test:
-        success = self_test(
-            input_dir=Path(config["input_dir"]) if "input_dir" in config else None,
-            output_dir=Path(config["output_dir"]) if "output_dir" in config else None
-        )
-        sys.exit(0 if success else 1)
-
     if args.check_updates:
         check_updates()
         sys.exit(0)
@@ -141,12 +141,16 @@ def main():
         print_error("Output directory not specified. Use --output-dir or run in interactive mode.")
         sys.exit(1)
 
-    input_dir = Path(config["input_dir"])
-    output_dir = Path(config["output_dir"])
-
     # Save updated config if config file provided
     if config_path:
         save_config(config_path, config)
+
+    # Return final config to be consumed by cosmos.py
+    config["self_test"] = args.self_test
+    return config
+
+if __name__ == "__main__":
+    main()
 
     # From here we would:
     # 1. Use manifest parser to find or load manifest.
@@ -154,12 +158,6 @@ def main():
     # 3. Process clips using VideoProcessor.
     #
     # For now, we'll just log that we've completed CLI argument resolution.
-    logger.info("CLI argument resolution complete. Ready to proceed with processing pipeline.")
-    logger.info(f"Input Directory: {input_dir}")
-    logger.info(f"Output Directory: {output_dir}")
-    if "manifest" in config:
-        logger.info(f"Manifest: {config['manifest']}")
-
     # The next step would be calling into the main cosmos pipeline (e.g. from cosmos.py)
     # This might look like:
     # 
@@ -168,8 +166,3 @@ def main():
     # from .processor import VideoProcessor, ProcessingOptions, ProcessingMode
     #
     # # ... load manifest, validate, process, etc.
-    #
-    # For now, we leave this as is.
-
-if __name__ == "__main__":
-    main()

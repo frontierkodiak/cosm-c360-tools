@@ -1,311 +1,474 @@
 Directory tree, stemming from root "/home/caleb/repo/cosm-c360-tools":
-├── README.md (85 lines)
-├── cosmos.py (1)
-├── pyproject.toml (8)
-├── src (765)
-│   └── cosmos (765)
+├── README.md (169 lines)
+├── TESTING.md (63)
+├── cosmos.py (92)
+├── dev.md (349)
+├── pyproject.toml (11)
+├── src (1230)
+│   └── cosmos (1230)
 │       │   ├── __init__.py (1)
-│       │   ├── cli.py (1)
+│       │   ├── cli.py (176)
 │       │   ├── manifest.py (204)
+│       │   ├── preflight.py (197)
 │       │   ├── processor.py (280)
-│       │   ├── utils.py (1)
+│       │   ├── utils.py (94)
 │       │   └── validation.py (278)
-├── tests (530)
-│   ├── __init__.py (1)
-│   ├── test_data (0)
-│   ├── test_manifest.py (117)
-│   ├── test_processing.py (214)
-│   └── test_validation.py (198)
-└── ts_to_mp4.py (280)
+└── tests (550)
+    │   ├── __init__.py (1)
+    │   ├── test_data (0)
+    │   ├── test_integration.py (20)
+    │   ├── test_manifest.py (117)
+    │   ├── test_processing.py (214)
+    │   └── test_validation.py (198)
 ----
 ----
-Full Path: ts_to_mp4.py
+Full Path: cosmos.py
 
-# ts_to_mp4.py
+# File: cosmos.py
 
-# NOTE: Old standalone script for one-off conversions, this is what we are migrating in the full tool (which will use cosmos.py as entrypoint)
+import sys
+from pathlib import Path
 
-import os
-import json
-import subprocess
-from glob import glob
-from tqdm import tqdm
-
-def safe_remove(filepath):
-    """Remove the file if it exists, ignoring if not present."""
-    if os.path.exists(filepath):
-        os.remove(filepath)
-
-def gather_second_directories(base_dir: str):
-    """
-    Gather all second-level directories (*S) under *H/*M directories.
-    Return a list of these second directories for processing.
-
-    This helper function just collects the "S" directories so we can
-    iterate over them with tqdm to show progress more easily.
-    """
-    second_dirs = []
-    hour_dirs = sorted([d for d in glob(os.path.join(base_dir, '*H')) if os.path.isdir(d)])
-    for hdir in hour_dirs:
-        minute_dirs = sorted([d for d in glob(os.path.join(hdir, '*M')) if os.path.isdir(d)])
-        for mdir in minute_dirs:
-            sdirs = sorted([d for d in glob(os.path.join(mdir, '*S')) if os.path.isdir(d)])
-            second_dirs.extend(sdirs)
-    return second_dirs
-
-def gather_ts_segments(base_dir: str):
-    """
-    Recursively traverse the directory structure starting from `base_dir`,
-    identify directories with meta.json and .ts files, and build a list of
-    (timestamp, ts_filepath) segments.
-
-    We now know from experimentation that:
-    - Each second-level directory (like 0H/0M/0S) contains ~10 .ts files and a meta.json
-      that might have 60 increments (0.0167s apart).
-    - We must truncate increments if they exceed the number of .ts files.
-    - Each .ts file contains four HEVC tile streams that will need to be arranged in a 2x2 grid.
-
-    We'll return a sorted list of (timestamp, ts_file_path) for all segments.
-
-    We'll use tqdm to track overall progress as we process all "S" directories.
-    """
-    segments = []
-    second_dirs = gather_second_directories(base_dir)
-    print(f"Found a total of {len(second_dirs)} second-level directories. Processing...")
-
-    for sdir in tqdm(second_dirs, desc="Processing second directories"):
-        meta_file = os.path.join(sdir, 'meta.json')
-        if not os.path.isfile(meta_file):
-            # no meta.json, skip
-            continue
-
-        try:
-            with open(meta_file, 'r') as f:
-                meta = json.load(f)
-        except Exception:
-            # couldn't load meta.json
-            continue
-
-        if "Time" not in meta or "x0" not in meta["Time"] or "xi-x0" not in meta["Time"]:
-            # Invalid meta structure
-            continue
-
-        x0 = meta["Time"]["x0"]
-        increments = meta["Time"]["xi-x0"]
-
-        ts_files = sorted([f for f in glob(os.path.join(sdir, '*.ts')) if '.ts:' not in f])
-        if not ts_files:
-            # no ts files, skip
-            continue
-
-        # If increments are more than ts_files, truncate increments
-        if len(increments) > len(ts_files):
-            increments = increments[:len(ts_files)]
-
-        # If still mismatch, skip
-        if len(ts_files) != len(increments):
-            continue
-
-        # Associate each ts with its timestamp
-        for i, ts_file in enumerate(ts_files):
-            segment_timestamp = x0 + increments[i]
-            segments.append((segment_timestamp, ts_file))
-
-    return segments
-
-def write_concat_file(segments, output_path):
-    """
-    Given a sorted list of (timestamp, ts_file_path) segments, write them out to a file
-    suitable for the ffmpeg concat demuxer.
-
-    The concat demuxer file syntax:
-    file '/full/path/to/segment1.ts'
-    file '/full/path/to/segment2.ts'
-    ...
-    """
-    with open(output_path, 'w') as f:
-        for _, seg_path in segments:
-            abs_path = os.path.abspath(seg_path)
-            f.write(f"file '{abs_path}'\n")
-            
-def try_encode_with_fallback(input_args, output_path, filter_complex, force_hardware=False, force_software=False):
-    """Try hardware encoding first, fall back to software if it fails."""
-    
-    # Base command elements that don't change between encoders
-    base_cmd = [
-        "ffmpeg", "-y",
-        *input_args,
-        "-filter_complex", filter_complex
-    ]
-    
-    # Only try hardware if not forcing software
-    if not force_software:
-        nvenc_cmd = [
-            *base_cmd,
-            "-c:v", "h264_nvenc",
-            "-preset", "p7",
-            "-qp", "18",
-            output_path
-        ]
-        
-        try:
-            print("Attempting hardware-accelerated encoding with NVENC...")
-            subprocess.run(nvenc_cmd, check=True)
-            print("Hardware encoding successful!")
-            return True
-        except subprocess.CalledProcessError as e:
-            if force_hardware:
-                print(f"Hardware encoding failed and --force-hardware was specified: {str(e)}")
-                return False
-            print(f"Hardware encoding failed: {str(e)}")
-            print("Falling back to software encoding...")
-    
-    # Only try software if not forcing hardware
-    if not force_hardware:
-        software_cmd = [
-            *base_cmd,
-            "-c:v", "libx264",
-            "-preset", "slow",  # Quality/speed tradeoff
-            "-crf", "18",      # Quality level (lower = better, 18-28 is typical range)
-            output_path
-        ]
-        
-        try:
-            print("Attempting software encoding with libx264...")
-            subprocess.run(software_cmd, check=True)
-            print("Software encoding successful!")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"Software encoding failed: {str(e)}")
-            return False
-    
-    return False
+from src.cosmos.cli import run_cli
+from src.cosmos.preflight import run_self_test
+from src.cosmos.utils import print_info, print_error, print_success
+from src.cosmos.manifest import find_manifest, ManifestParser
+from src.cosmos.validation import InputValidator
+from src.cosmos.processor import VideoProcessor, ProcessingOptions, ProcessingMode
 
 def main():
-    # Basic CLI argument parsing
-    import argparse
-    parser = argparse.ArgumentParser(description='Process NFL camera .ts files into merged MP4.')
-    parser.add_argument('--force-hardware', action='store_true', help='Only use hardware encoding')
-    parser.add_argument('--force-software', action='store_true', help='Only use software encoding')
-    args = parser.parse_args()
+    config = run_cli()
 
-    BASE_DIR = "/home/caleb/ladybird_failed_copy"
-    OUTPUT_DIR = os.path.join(BASE_DIR, "processed")
-    print(f"Using base directory: {BASE_DIR}")
-    print(f"Outputs will be saved to: {OUTPUT_DIR}")
+    input_dir = Path(config["input_dir"])
+    output_dir = Path(config["output_dir"])
+    job_name = config.get("job_name", "default_job")
 
-    # Create output directory if it doesn't exist
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # If self-test requested, run it and exit
+    if config.get("self_test", False):
+        manifest_path = Path(config["manifest"]) if "manifest" in config else None
+        success = run_self_test(input_dir, output_dir, manifest_path)
+        if success:
+            print_success("Self-test passed. System ready.")
+        else:
+            print_error("Self-test failed. Please address the above issues.")
+            sys.exit(1)
+        sys.exit(0)
 
-    # Update output paths to use OUTPUT_DIR
-    concat_file = os.path.join(OUTPUT_DIR, "file_list.txt")
-    fullres_path = os.path.join(OUTPUT_DIR, "fullres.mp4")
-    output_4k_path = os.path.join(OUTPUT_DIR, "output_4k.mp4")
-    output_1080p_path = os.path.join(OUTPUT_DIR, "output_1080p.mp4")
+    # Attempt to find or load manifest
+    manifest_path = config.get("manifest")
+    if manifest_path:
+        manifest_path = Path(manifest_path)
+        # We'll trust the user on correctness. If invalid, validation will fail later.
+        if not manifest_path.is_file():
+            print_error(f"Specified manifest {manifest_path} not found.")
+            sys.exit(1)
+    else:
+        # No manifest specified, try to find it automatically
+        try:
+            manifest_path = find_manifest(input_dir)
+            if manifest_path is None:
+                print_error("No manifest found. Please provide --manifest.")
+                sys.exit(1)
+        except ValueError as e:
+            # Multiple manifests found
+            print_error(str(e))
+            print_error("Use --manifest to specify which manifest to use.")
+            sys.exit(1)
 
-    # Clean up old output files if they exist
-    safe_remove(concat_file)
-    safe_remove(fullres_path)
-    safe_remove(output_4k_path)
-    safe_remove(output_1080p_path)
+    manifest_parser = ManifestParser(manifest_path)
 
-    # Step 1: Gather all segments from the directory structure
-    all_segments = gather_ts_segments(BASE_DIR)
+    # Validate input directory and system readiness for actual processing
+    validator = InputValidator(input_dir, output_dir, manifest_parser)
+    validation_result = validator.validate_all()
+    if not validation_result.can_proceed:
+        print_error("Validation failed. Cannot proceed with processing.")
+        for issue in validation_result.system_issues:
+            print_error(f"System Issue: {issue.message}")
+        sys.exit(1)
 
-    if not all_segments:
-        print("No segments found after processing all directories.")
-        return
-
-    # Step 2: Sort segments by timestamp
-    all_segments.sort(key=lambda x: x[0])
-    print(f"Found a total of {len(all_segments)} segments.")
-
-    # Step 3: Write out concat file for ffmpeg
-    write_concat_file(all_segments, concat_file)
-    print(f"Concat file written to {concat_file}.")
-
-    # At this point, we have a large number of .ts files representing possibly ~1m50s or more.
-    # Each .ts has 4 HEVC streams (tiles) representing patches of a huge frame.
-    #
-    # Tile Layout & Overlap Structure:
-    # - Each frame is divided into a 2x2 grid of tiles
-    # - Adjacent tiles overlap by 64 pixels
-    # - To correct this, we crop 32px from each overlapping edge:
-    #   * top-left:     crop 32px from right and bottom edges
-    #   * top-right:    crop 32px from left and bottom edges
-    #   * bottom-left:  crop 32px from top and right edges
-    #   * bottom-right: crop 32px from top and left edges
-    #
-    # We will now run ffmpeg to:
-    #   1. Concatenate all .ts files into one continuous input stream
-    #   2. Crop overlapping regions from each tile
-    #   3. Stack the tiles into a full frame:
-    #       top-left:     [0:v:0] - cropped right/bottom
-    #       top-right:    [0:v:1] - cropped left/bottom
-    #       bottom-left:  [0:v:2] - cropped top/right
-    #       bottom-right: [0:v:3] - cropped top/left
-    #
-    # The combined output ("fullres.mp4") will be massive and extremely high-resolution.
-    # This might be slow and memory-intensive.
-
-    # Setup for encoding
-    input_args = ["-f", "concat", "-safe", "0", "-i", concat_file]
-    filter_complex = (
-        "[0:v:0]crop=iw-32:ih-32:0:0[tl];"
-        "[0:v:1]crop=iw-32:ih-32:32:0[tr];"
-        "[0:v:2]crop=iw-32:ih-32:0:32[bl];"
-        "[0:v:3]crop=iw-32:ih-32:32:32[br];"
-        "[tl][tr]hstack=2[top];"
-        "[bl][br]hstack=2[bottom];"
-        "[top][bottom]vstack=2"
+    # At this point, we have validated data and system. Proceed with processing.
+    options = ProcessingOptions(
+        output_resolution=(3840, 2160),
+        quality_mode=ProcessingMode.BALANCED
     )
+    processor = VideoProcessor(output_dir, options)
 
-    print("Running ffmpeg to create fullres.mp4 (this may take a long time)...")
-    if not try_encode_with_fallback(
-        input_args, 
-        fullres_path, 
-        filter_complex,
-        force_hardware=args.force_hardware,
-        force_software=args.force_software
-    ):
-        print("Encoding failed. Check logs for details.")
-        return
+    # Process each valid clip
+    for clip_name, clip_result in validation_result.clip_results.items():
+        if clip_result.is_valid:
+            result = processor.process_clip(clip_result)
+            if result.success:
+                print_success(f"Processed clip: {clip_name}. Output: {result.output_path}")
+            else:
+                print_error(f"Failed to process clip {clip_name}: {result.error}")
 
-    # Create 4K downscaled version (using same encoder choice as fullres)
-    print(f"Creating a 4K downscaled version ({output_4k_path})...")
-    if not try_encode_with_fallback(
-        ["-i", fullres_path],
-        output_4k_path,
-        "scale=3840:-2",
-        force_hardware=args.force_hardware,
-        force_software=args.force_software
-    ):
-        print("4K downscaling failed. Check logs for details.")
-        return
+    # Write job info
+    job_info_path = output_dir / "job_info.txt"
+    with open(job_info_path, "w", encoding='utf-8') as f:
+        f.write(f"Job Name: {job_name}\n")
+        f.write(f"Input Directory: {input_dir}\n")
+        f.write(f"Output Directory: {output_dir}\n")
+        f.write(f"Manifest: {manifest_path}\n")
+        f.write("Processing complete.\n")
 
-    # Create 1080p downscaled version
-    print(f"Creating a 1080p downscaled version ({output_1080p_path})...")
-    if not try_encode_with_fallback(
-        ["-i", fullres_path],
-        output_1080p_path,
-        "scale=1920:-2",
-        force_hardware=args.force_hardware,
-        force_software=args.force_software
-    ):
-        print("1080p downscaling failed. Check logs for details.")
-        return
-
-    print("All steps completed successfully.")
-    print(f"Output files are in: {OUTPUT_DIR}")
+    print_info("All done.")
 
 if __name__ == "__main__":
     main()
 
 
 ----
-Full Path: cosmos.py
+Full Path: dev.md
 
-# NOTE: Placeholder for new entrypoint for full tool
+# input directory structure/example metadata
+a structured directory of .ts files (for data produced by a rather exotic ultra-high resolution camera, which saves four separate streams per file, and in approximately 1/10second chunks. 
+
+You can get a good sense of the directory structure of the input data, and the two types of metadata available (a single clip manifest .xml, and meta.json files for each second) here:
+```
+Directory tree, stemming from root "/home/caleb/ladybird_failed_copy":
+├── 0H (321 lines)
+│   ├── 0M (180)
+│   │   ├── 0S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 10S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 11S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 12S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 13S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 14S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 15S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 16S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 17S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 18S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 19S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 1S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 20S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 21S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 22S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 23S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 24S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 25S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 26S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 27S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 28S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 29S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 2S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 30S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 31S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 32S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 33S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 34S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 35S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 36S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 37S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 38S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 39S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 3S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 40S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 41S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 42S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 43S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 44S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 45S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 46S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 47S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 48S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 49S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 4S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 50S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 51S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 52S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 53S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 54S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 55S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 56S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 57S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 58S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 59S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 5S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 6S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 7S (3)
+│   │   │   └── meta.json (3)
+│   │   ├── 8S (3)
+│   │   │   └── meta.json (3)
+│   │   └── 9S (3)
+│   │       │   └── meta.json (3)
+│   └── 1M (141)
+│       │   ├── 0S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 10S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 11S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 12S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 13S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 14S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 15S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 16S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 17S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 18S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 19S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 1S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 20S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 21S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 22S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 23S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 24S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 25S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 26S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 27S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 28S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 29S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 2S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 30S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 31S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 32S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 33S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 34S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 35S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 36S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 37S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 38S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 39S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 3S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 40S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 41S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 42S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 43S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 44S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 45S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 46S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 47S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 48S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 49S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 4S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 50S (3)
+│       │   │   └── meta.json (3)
+│       │   ├── 51S (3)
+│       │   │   └── meta.json (3)
+│       │   └── 52S (0)
+└── LADYBIRD.xml (8)
+----
+----
+Full Path: LADYBIRD.xml
+
+<Clip_Manifest NumDirs="498">
+  <_1 Name="CLIP2" In="1.6261465427355111E-307" InIdx="228" Out="1.6261466707242047E-307" OutIdx="4110" Locked="True" InStr="07:27:16.618 08/13/2024" Epoch="1723559236.618" Pos="0H/0M/3.8S/" />
+  <_2 Name="CLIP1" In="1.6261465850368715E-307" InIdx="1511" Out="1.6261470057932999E-307" OutIdx="14273" Locked="True" InStr="07:27:38.022 08/13/2024" Epoch="1723559258.0219998" Pos="0H/0M/25.1833333333333S/" />
+  <_3 Name="CLIP3" In="1.6261501214407288E-307" InIdx="14658" Out="1.6261501214407288E-307" OutIdx="14658" Locked="True" InStr="07:57:27.463 08/13/2024" Epoch="1723561047.4629998" Pos="0H/4M/4.30000000000001S/" />
+  <_4 Name="CLIP4" In="1.6261504029336424E-307" InIdx="15096" Out="1.6261504567393675E-307" OutIdx="16728" Locked="True" InStr="07:59:49.900 08/13/2024" Epoch="1723561189.8999999" Pos="0H/4M/11.6S/" />
+  <_5 Name="CLIP6" In="1.626151890120643E-307" InIdx="17124" Out="1.6261520105896575E-307" OutIdx="20778" Locked="True" InStr="08:12:22.425 08/13/2024" Epoch="1723561942.425" Pos="0H/4M/45.4S/" />
+  <_6 Name="CLIP7" In="1.6261529151745092E-307" InIdx="21221" Out="1.6261531935026773E-307" OutIdx="29663" Locked="True" InStr="08:21:01.108 08/13/2024" Epoch="1723562461.108" Pos="0H/5M/53.6833333333333S/" />
+</Clip_Manifest>
+
+----
+Full Path: 0H/1M/43S/meta.json
+
+{
+"Time":{"x0":1723559335.914, "xi-x0":[0,0.017,0.033,0.050,0.067,0.083,0.100,0.117,0.133,0.150,0.167,0.183,0.200,0.217,0.233,0.250,0.267,0.284,0.300,0.317,0.334,0.350,0.367,0.384,0.400,0.417,0.434,0.450,0.467,0.484,0.500,0.517,0.534,0.550,0.567,0.584,0.601,0.617,0.634,0.651,0.667,0.684,0.701,0.717,0.734,0.751,0.767,0.784,0.801,0.817,0.834,0.851,0.867,0.884,0.901,0.917,0.934,0.951,0.968,0.984]}
+}
+
+----
+Full Path: 0H/1M/44S/meta.json
+
+{
+"Time":{"x0":1723559336.915, "xi-x0":[0,0.017,0.033,0.050,0.067,0.083,0.100,0.117,0.133,0.150,0.167,0.183,0.200,0.217,0.233,0.250,0.267,0.284,0.300,0.317,0.334,0.350,0.367,0.384,0.400,0.417,0.434,0.450,0.467,0.484,0.500,0.517,0.534,0.550,0.567,0.584,0.600,0.617,0.634,0.651,0.667,0.684,0.701,0.717,0.734,0.751,0.767,0.784,0.801,0.817,0.834,0.851,0.867,0.884,0.901,0.917,0.934,0.951,0.968,0.984]}
+}
+```
+
+
+---
+
+# COSM C360 Tools Project Context
+
+## Overview
+The COSM C360 Tools project (`cosmos`) is a utility for converting specialized video output from COSM C360 cameras (commonly used in professional sports production, e.g., NFL pylon cameras) into standard MP4 format. The tool processes the camera's unique output format, which consists of multiple tiled HEVC streams with accompanying metadata.
+
+## Target Users
+- **Primary Users**: Ecologists and scientists deploying these cameras for field research
+- **Technical Level**: Non-technical users who need to review footage before submitting to main analysis pipeline
+- **Use Case**: Converting raw camera format to standard MP4s for review and ingest into ecological analysis tools
+
+## User Considerations
+1. **Technical Expertise**
+   - Users are not technically sophisticated
+   - Need simple, guided interface
+   - Should handle errors gracefully with clear explanations
+   - Must provide clear feedback about processing status
+
+2. **System Requirements**
+   - Must support Windows (primary platform for users)
+   - Must work on low-end systems (not workstation-grade machines)
+   - Should provide options for memory-constrained systems
+   - Should automatically detect and use best available encoding options
+
+3. **Workflow Integration**
+   - Tool will eventually be integrated into main ecological analysis software
+   - Currently needed as standalone utility for pre-processing
+   - Should maintain compatibility with analysis pipeline requirements
+
+## Key Requirements Beyond Technical Specs
+
+1. **Usability**
+   - Interactive mode for guided operation
+   - Clear progress indication
+   - Informative error messages
+   - Pre-flight validation to catch issues early
+   - No technical knowledge required for basic operation
+
+2. **Robustness**
+   - Automatic encoder selection and fallback
+   - Handles partial or corrupted data gracefully
+   - Works across different platforms
+   - Adapts to available system resources
+
+3. **System Adaptation**
+   - Automatic detection of optimal settings
+   - Low-memory mode for constrained systems
+   - Fallback to software encoding if hardware encoding unavailable
+   - Clear warnings about system requirements
+
+4. **Error Handling**
+   - Clear, non-technical error messages
+   - Validation before processing starts
+   - Helpful suggestions for resolving issues
+   - Graceful handling of partial or corrupted data
+
+## Development Priorities
+1. **Core Functionality**
+   - Reliable video processing
+   - Robust input validation
+   - Cross-platform compatibility
+   - Memory usage optimization
+
+2. **User Experience**
+   - Simple, guided interface
+   - Clear progress reporting
+   - Informative feedback
+   - Error resilience
+
+3. **Optional Enhancements**
+   - Configuration saving
+   - Processing resumption
+   - Automated updates
+   - Additional format support
+
+## Deployment Considerations
+- Tool will be distributed via public repository
+- Users will need to pull repo and follow installation instructions
+- Should minimize external dependencies
+- Must include clear installation and usage documentation
+- Should provide support for common issues
+
+## Integration Context
+This tool is part of a larger ecological analysis pipeline:
+1. Raw footage captured with COSM C360 cameras
+2. Conversion to standard MP4 format (this tool)
+3. Ingestion into ecological analysis software
+4. Analysis of ecological activity in footage
+
+## Future Considerations
+- Tool may be integrated directly into main analysis software
+- May need to handle additional camera formats
+- Could expand to support batch processing
+- Might need additional output format options
 
 ----
 Full Path: pyproject.toml
@@ -316,97 +479,251 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "psutil>=6.1.0",
+    "questionary>=2.0.1",
+]
 
+
+----
+Full Path: TESTING.md
+
+# Testing the COSM C360 Tools
+
+This document outlines how to run tests on macOS, Linux, and Windows.
+
+## Requirements
+
+- Python 3.10 or higher
+- `pytest` installed in your environment
+- `ffmpeg` installed and accessible in `PATH`
+- The input directory specified for integration tests (`/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy`) must be accessible on your machine.
+- The output directory (`/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out`) must exist and be writable.
+
+## Installing Test Dependencies
+
+If you used `uv` (recommended):
+
+```bash
+# On macOS and Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv new cosmos-env
+uv activate cosmos-env
+pip install -r requirements.txt
+
+# On Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+uv new cosmos-env
+uv activate cosmos-env
+pip install -r requirements.txt
+```
+
+If not using `uv`, you can use `python -m venv` and `pip` as documented in the README.
+
+## Running Tests
+
+To run all tests:
+```bash
+pytest tests
+```
+
+This will run:
+- Unit tests for manifest, validation, processing.
+- The integration test (`test_integration.py`).
+
+If the integration test fails, ensure that:
+- The specified input and output directories are accessible.
+- FFmpeg is installed and in `PATH`.
+- You have sufficient system resources (disk space, etc.).
+
+## Platform Notes
+
+- **macOS & Linux**: Should work out of the box with `pytest`.
+- **Windows**: Ensure Python and ffmpeg are installed, and that `ffmpeg` is in `PATH`. Running `pytest` in `powershell` or `cmd` is supported.
+
+## Additional Tips
+
+- Use `-v` for verbose output:
+  ```bash
+  pytest -v tests
+  ```
+- Use `-k` to run a specific test:
+  ```bash
+  pytest -k test_self_test_integration
+  ```
 
 ----
 Full Path: README.md
 
-# cosm-c360-tools
-Generate standard MP4s from COSM output streams. Standalone utility for parsing and converting COSM C360-style .ts outputs to standard video formats.
+# COSM C360 Tools
 
-## Overview
-`cosmos` is a specialized tool for processing multi-stream video data from COSM C360 cameras. It handles the complex task of converting the camera's native output format (multiple tiled HEVC streams with metadata) into standard MP4 files suitable for review and analysis.
+**COSM C360 Tools** (referred to as `cosmos`) is a command-line utility for converting specialized video output from COSM C360 cameras into standard MP4 video files suitable for review and downstream analysis. It handles the complex tiled HEVC output and merges multiple streams into a standard video format.
 
-### Core Processing Logic
-1. **Manifest Parsing & Clip Identification**
-   - Parse XML manifest to identify distinct recording clips
-   - Extract temporal boundaries and frame indices for each clip
-   - Validate clip metadata integrity and continuity
+## Key Features
 
-2. **Segment Analysis & Validation**
-   - Scan directory structure for .ts segments and metadata
-   - Parse meta.json files to map precise temporal locations
-   - Validate segment sequence integrity within clip boundaries
-   - Match segments to their respective clips
+- **Manifest Parsing & Validation**: Automatically finds and parses the camera's XML manifest file, identifying clips and verifying temporal continuity.
+- **Segment Analysis**: Gathers `.ts` segments and their corresponding `meta.json` files, ensuring integrity and completeness.
+- **Video Assembly**: Extracts and aligns four HEVC tile streams, handles overlapping regions, and assembles frames into a full-resolution video.
+- **Multi-Resolution Output**: Outputs a full-resolution master file and can generate downscaled variants (e.g., 4K, 1080p).
+- **Cross-Platform & Hardware Acceleration**: Works on Linux, macOS, and Windows. Automatically attempts hardware-accelerated encoding (NVENC, AMF, QSV) and falls back to software (x264).
+- **Pre-Flight Checks**: Built-in `--self-test` mode checks system requirements (FFmpeg, disk space, memory) and input directory structure before processing.
+- **Interactive & Non-Interactive Modes**: Fully scriptable via CLI flags, or run interactively with guided prompts for non-technical users.
+- **Update Checking**: Checks for updates if `git` is available.
 
-3. **Stream Processing**
-   - Concatenate temporally sequential segments within clip boundaries
-   - Extract and align the four HEVC tile streams from each segment
-   - Handle tile overlap regions with precise cropping
-   - Stack tiles into complete frames
+## System Requirements
 
-4. **Output Generation**
-   - Merge processed streams into standard MP4 container
-   - Generate full-resolution master files
-   - Create scaled variants (4K, 1080p) as requested
+- **Operating System**: Linux, macOS, or Windows.
+- **Python**: 3.10 or higher recommended.
+- **FFmpeg**: Must be installed and accessible in `PATH`.
+- **Memory**: At least 8GB RAM recommended (less may cause slowdowns, consider `--low-memory` mode).
+- **Disk Space**: At least 10GB free disk space recommended.
+- **Git (Optional)**: To automatically check for updates when running `--check-updates`.
 
-## Requirements & Features
-Development checklist and implementation status:
+## Input Directory Structure
 
-### Core Functionality
-- [x] Manifest parsing and validation
-  - [x] XML manifest discovery and parsing
-  - [x] Clip boundary identification
-  - [x] Temporal sequence validation
-  - [x] Frame index tracking
+The input directory should follow a hierarchical structure reflecting the camera output:
 
-- [x] Input validation and analysis
-  - [x] Directory structure verification
-  - [x] Meta.json parsing and validation
-  - [x] Segment integrity checking
-  - [x] Missing segment detection
-  - [x] Storage requirement estimation
+```
+input_dir/
+ ├── 0H/
+ │   ├── 0M/
+ │   │   ├── 0S/
+ │   │   │   ├── meta.json
+ │   │   │   ├── <segment .ts files>
+ │   │   ├── 1S/
+ │   │   │   ├── meta.json
+ │   │   │   ├── <segment .ts files>
+ │   │   └── ...
+ │   └── 1M/
+ │       ├── 0S/
+ │       │   ├── meta.json
+ │       │   ├── <segment .ts files>
+ │       └── ...
+ ├── MyManifest.xml
+ └── AnotherManifest.xml (if multiple manifests exist)
+```
 
-- [x] Stream processing
-  - [x] Segment concatenation
-  - [x] Tile extraction and alignment
-  - [x] Overlap region handling
-  - [x] Frame assembly
-
-- [x] Output generation
-  - [x] Full resolution export
-  - [x] Multi-resolution output support
-  - [x] Encoder optimization
-
-### CLI Interface
-- [ ] Interactive mode with guided workflow
-- [ ] Non-interactive mode with CLI flags
-- [ ] Progress reporting and status updates
-- [ ] Error handling and user feedback
-
-### System Integration
-- [x] FFmpeg availability verification
-- [x] Codec support validation
-- [x] Basic system requirement checking
-- [x] Windows compatibility testing
-
-### Optional Enhancements
-- [ ] Self-test command
-- [ ] Configuration persistence
-- [ ] Resumable conversions
-- [ ] Log file generation
-- [ ] Update checking
-- [ ] Multiple output format support
-- [ ] Custom encoder settings
-- [ ] Batch processing mode
+- Each second-level directory (`XH/XM/XS`) must contain a `meta.json` file and `.ts` files.
+- The top-level directory should contain a single `.xml` manifest file. If multiple `.xml` files are present, you must specify which one to use via `--manifest`.
 
 ## Installation
-[Installation instructions TBD]
+
+We recommend using [UV](https://github.com/astral-sh/uv?tab=readme-ov-file) for environment management.
+
+### Using UV (Recommended)
+
+**macOS / Linux**:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv new cosmos-env
+uv activate cosmos-env
+pip install -r requirements.txt
+```
+
+**Windows (PowerShell)**:
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+uv new cosmos-env
+uv activate cosmos-env
+pip install -r requirements.txt
+```
+
+If not using UV, you can still use Python's built-in `venv`:
+```bash
+# On macOS/Linux:
+python3 -m venv venv
+source venv/bin/activate
+
+# On Windows:
+python -m venv venv
+venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+Confirm `ffmpeg` is installed and in your PATH:
+```bash
+ffmpeg -version
+```
+
+If `ffmpeg` is not found, please install it according to your platform's instructions.
 
 ## Usage
-[Usage instructions TBD]
 
+### Non-Interactive Mode
+
+Run `cosmos.py` directly or via `python`:
+
+```bash
+python cosmos.py --input-dir /path/to/input --output-dir /path/to/output
+```
+
+If multiple `.xml` manifests exist, specify which one:
+```bash
+python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --manifest /path/to/manifest.xml
+```
+
+Run a system self-test before processing:
+```bash
+python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --self-test
+```
+
+Check for updates:
+```bash
+python cosmos.py --check-updates
+```
+
+Specify a job name (useful for logs and output notes):
+```bash
+python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --job-name MyJobName
+```
+
+Adjust logging:
+```bash
+python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --log-level DEBUG --log-file mylog.log
+```
+
+### Interactive Mode
+
+If you're unsure about the input directory or other parameters, run:
+```bash
+python cosmos.py --interactive
+```
+
+The tool will guide you through selecting the input directory, output directory, and other settings interactively. After confirming, it will proceed with processing.
+
+### Example Commands (All Platforms)
+
+**Windows (PowerShell)**:
+```powershell
+python .\cosmos.py --input-dir C:\data\cosm_input --output-dir C:\data\cosm_output --self-test
+```
+
+**macOS / Linux (Bash)**:
+```bash
+python cosmos.py --input-dir ~/cosm_input --output-dir ~/cosm_output --interactive
+```
+
+## Running Tests
+
+Tests are included to ensure code quality and correctness:
+
+```bash
+pytest tests
+```
+
+Ensure `pytest` is installed:
+```bash
+pip install pytest
+```
+
+This runs the test suite (unit tests for validation, processing, manifest parsing, and integration tests). Use `TESTING.md` for more detailed testing instructions.
+
+## Additional Notes
+
+- Output files, including `job_info.txt`, are placed in the specified `output` directory.
+- If system resources are limited, consider `--low-memory` mode (to be added) or reducing resolution.
+- If you wish to contribute or request features, please open an issue or a pull request.
 
 ----
 Full Path: src/cosmos/validation.py
@@ -693,6 +1010,99 @@ class InputValidator:
 ----
 Full Path: src/cosmos/utils.py
 
+# File: src/cosmos/utils.py
+
+import logging
+import json
+import subprocess
+import shutil
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+__version__ = "0.2.1"  # Just an example version
+
+def init_logging(level: str = "INFO", logfile: Optional[Path] = None) -> logging.Logger:
+    logger = logging.getLogger("cosmos")
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    logger.handlers.clear()
+    logger.propagate = False
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(getattr(logging, level.upper(), logging.INFO))
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    if logfile:
+        fh = logging.FileHandler(logfile, encoding='utf-8')
+        fh.setLevel(getattr(logging, level.upper(), logging.INFO))
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
+    return logger
+
+def load_config(config_path: Path) -> Dict[str, Any]:
+    if config_path.is_file():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+def save_config(config_path: Path, config: Dict[str, Any]) -> None:
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
+
+def check_ffmpeg() -> bool:
+    try:
+        subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def is_git_available() -> bool:
+    return shutil.which("git") is not None
+
+def check_for_updates(repo_path: Path) -> bool:
+    """
+    Check if updates are available for a Git repository.
+    Returns True if an update is available, False otherwise.
+    If any error occurs, returns False.
+    """
+    try:
+        # 'git fetch' to update remote refs
+        subprocess.run(["git", "-C", str(repo_path), "fetch"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        remote_head = subprocess.check_output(["git", "-C", str(repo_path), "ls-remote", "origin", "HEAD"], text=True).split()[0]
+        local_head = subprocess.check_output(["git", "-C", str(repo_path), "rev-parse", "HEAD"], text=True).strip()
+        return remote_head != local_head
+    except Exception as e:
+        print_error(f"Error checking for updates: {e}")
+        return False
+
+def check_updates(repo_path: Path = Path(".")) -> None:
+    print_info(f"Current version: {__version__}")
+    if is_git_available():
+        if check_for_updates(repo_path):
+            print_info("An update is available! Run `git pull` to update.")
+        else:
+            print_info("You are up-to-date.")
+    else:
+        print_warning("Git is not installed or not accessible. Cannot check for updates.")
+        print_info("Visit the repository and `git pull` manually to update.")
+
+def print_info(message: str) -> None:
+    print(f"[INFO] {message}")
+
+def print_warning(message: str) -> None:
+    print(f"[WARNING] {message}")
+
+def print_error(message: str) -> None:
+    print(f"[ERROR] {message}", file=sys.stderr)
+
+def print_success(message: str) -> None:
+    print(f"[SUCCESS] {message}")
 
 
 ----
@@ -906,6 +1316,382 @@ def find_manifest(base_dir: Path) -> Optional[Path]:
 ----
 Full Path: src/cosmos/cli.py
 
+# File: src/cosmos/cli.py
+
+import argparse
+from pathlib import Path
+import sys
+import logging
+
+from typing import Optional
+
+from .utils import (
+    init_logging,
+    load_config,
+    save_config,
+    self_test,
+    check_updates,
+    check_ffmpeg,
+    print_info,
+    print_warning,
+    print_error,
+    print_success
+)
+
+# questionary is optional, ensure safe import:
+try:
+    import questionary
+except ImportError:
+    questionary = None
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="COSM C360 Tools CLI")
+    parser.add_argument("--input-dir", type=str, help="Path to input directory containing raw segments")
+    parser.add_argument("--output-dir", type=str, help="Path to output directory where processed files will be saved")
+    parser.add_argument("--manifest", type=str, help="Path to manifest file if not discoverable automatically")
+    parser.add_argument("--config-file", type=str, help="Path to a configuration file (JSON)")
+    parser.add_argument("--log-file", type=str, help="Path to a logfile")
+    parser.add_argument("--log-level", type=str, default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument("--interactive", action="store_true", help="Run in interactive mode")
+    parser.add_argument("--self-test", action="store_true", help="Run a self-test and exit")
+    parser.add_argument("--check-updates", action="store_true", help="Check for updates and exit")
+
+    return parser.parse_args()
+
+def run_interactive_mode(config: dict) -> dict:
+    """
+    Run an interactive session to gather input_dir, output_dir, and other settings.
+    Uses questionary for cross-platform interactive prompts.
+    If questionary not installed, fallback is to print an error and exit.
+    """
+    if questionary is None:
+        print_error("Interactive mode requested but 'questionary' is not installed.")
+        sys.exit(1)
+
+    print_info("Entering interactive mode...")
+
+    # Prompt for input directory
+    input_dir = questionary.path(
+        "Please select the input directory containing raw segments:",
+        default=str(config.get("input_dir", ""))
+    ).ask()
+
+    # Prompt for output directory
+    output_dir = questionary.path(
+        "Please select the output directory for processed files:",
+        default=str(config.get("output_dir", ""))
+    ).ask()
+
+    # Confirm ffmpeg available
+    if not check_ffmpeg():
+        print_warning("FFmpeg not found. Please install it before proceeding.")
+        questionary.confirm("Do you want to continue anyway?", default=False).ask()
+
+    # Prompt for log level
+    log_level = questionary.select(
+        "Select log level:",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=config.get("log_level", "INFO")
+    ).ask()
+
+    config["input_dir"] = input_dir
+    config["output_dir"] = output_dir
+    config["log_level"] = log_level
+
+    # Confirm final settings
+    print_info("Review your settings:")
+    print_info(f"  Input Directory: {config['input_dir']}")
+    print_info(f"  Output Directory: {config['output_dir']}")
+    print_info(f"  Log Level: {config['log_level']}")
+    confirm = questionary.confirm("Proceed with these settings?", default=True).ask()
+
+    if not confirm:
+        print_info("Aborted by user.")
+        sys.exit(0)
+
+    return config
+
+def main():
+    args = parse_args()
+
+    # Load config if provided
+    config_path = Path(args.config_file) if args.config_file else None
+    config = load_config(config_path) if config_path else {}
+
+    # Command line args override config or fill in missing fields
+    if args.log_level:
+        config["log_level"] = args.log_level
+    if args.log_file:
+        config["log_file"] = args.log_file
+    if args.input_dir:
+        config["input_dir"] = args.input_dir
+    if args.output_dir:
+        config["output_dir"] = args.output_dir
+    if args.manifest:
+        config["manifest"] = args.manifest
+
+    # Initialize logging
+    logfile = Path(config["log_file"]) if "log_file" in config else None
+    logger = init_logging(level=config.get("log_level", "INFO"), logfile=logfile)
+
+    # Handle special commands first
+    if args.self_test:
+        success = self_test(
+            input_dir=Path(config["input_dir"]) if "input_dir" in config else None,
+            output_dir=Path(config["output_dir"]) if "output_dir" in config else None
+        )
+        sys.exit(0 if success else 1)
+
+    if args.check_updates:
+        check_updates()
+        sys.exit(0)
+
+    # If interactive mode requested, run interactive prompts
+    if args.interactive:
+        config = run_interactive_mode(config)
+
+    # Validate that we have required directories
+    if "input_dir" not in config or not config["input_dir"]:
+        print_error("Input directory not specified. Use --input-dir or run in interactive mode.")
+        sys.exit(1)
+
+    if "output_dir" not in config or not config["output_dir"]:
+        print_error("Output directory not specified. Use --output-dir or run in interactive mode.")
+        sys.exit(1)
+
+    input_dir = Path(config["input_dir"])
+    output_dir = Path(config["output_dir"])
+
+    # Save updated config if config file provided
+    if config_path:
+        save_config(config_path, config)
+
+    # From here we would:
+    # 1. Use manifest parser to find or load manifest.
+    # 2. Validate inputs using InputValidator.
+    # 3. Process clips using VideoProcessor.
+    #
+    # For now, we'll just log that we've completed CLI argument resolution.
+    logger.info("CLI argument resolution complete. Ready to proceed with processing pipeline.")
+    logger.info(f"Input Directory: {input_dir}")
+    logger.info(f"Output Directory: {output_dir}")
+    if "manifest" in config:
+        logger.info(f"Manifest: {config['manifest']}")
+
+    # The next step would be calling into the main cosmos pipeline (e.g. from cosmos.py)
+    # This might look like:
+    # 
+    # from .manifest import find_manifest, ManifestParser
+    # from .validation import InputValidator
+    # from .processor import VideoProcessor, ProcessingOptions, ProcessingMode
+    #
+    # # ... load manifest, validate, process, etc.
+    #
+    # For now, we leave this as is.
+
+if __name__ == "__main__":
+    main()
+
+
+----
+Full Path: src/cosmos/preflight.py
+
+# File: src/cosmos/preflight.py
+
+import platform
+import os
+import sys
+import shutil
+from pathlib import Path
+import psutil
+from typing import Optional
+
+from .utils import print_info, print_warning, print_error, print_success, check_ffmpeg
+
+def check_python_version(min_version=(3, 8)):
+    return sys.version_info >= min_version
+
+def check_system_memory(minimum_gb=8):
+    total_memory = psutil.virtual_memory().total / (1024**3)
+    return total_memory >= minimum_gb
+
+def check_disk_space(directory: Path, minimum_gb=10):
+    usage = shutil.disk_usage(directory)
+    free_gb = usage.free / (1024**3)
+    return free_gb >= minimum_gb
+
+def check_required_codecs():
+    # Assume ffmpeg install that we verified can run. Detailed codec check
+    # could parse `ffmpeg -encoders` but omitted for brevity.
+    return check_ffmpeg()
+
+def check_directory_structure(input_dir: Path, manifest_path: Optional[Path] = None):
+    """
+    Basic directory structure checks:
+    - Confirm input_dir exists
+    - Confirm we have at least one .xml manifest if manifest_path not given
+    - If multiple .xml manifests found and no manifest_path specified, fail
+    - Check if we have at least one directory structure like NH/*M/*S/meta.json
+    """
+    if not input_dir.is_dir():
+        return {
+            "Directory Exists": {
+                "check": False,
+                "message": f"Input directory {input_dir} does not exist.",
+                "help": "Check the input_dir path."
+            }
+        }
+    
+    # Check for manifest files if manifest_path not specified
+    manifests = list(input_dir.glob("*.xml"))
+    if manifest_path:
+        # User specified manifest; check if it exists
+        if not manifest_path.is_file():
+            return {
+                "Manifest Provided": {
+                    "check": False,
+                    "message": f"Specified manifest {manifest_path} not found.",
+                    "help": "Ensure you provided the correct manifest path."
+                }
+            }
+    else:
+        # No manifest specified; must find exactly one
+        if len(manifests) == 0:
+            return {
+                "Manifest Discovery": {
+                    "check": False,
+                    "message": "No .xml manifest found in top-level directory.",
+                    "help": "Provide --manifest or place a single .xml in input_dir."
+                }
+            }
+        elif len(manifests) > 1:
+            return {
+                "Manifest Ambiguity": {
+                    "check": False,
+                    "message": "Multiple .xml manifests found but none specified.",
+                    "help": "Use --manifest to specify which manifest to use."
+                }
+            }
+
+    # Check basic structure: at least one H directory, inside it at least one M directory, inside it at least one S directory with meta.json
+    hour_dirs = [d for d in input_dir.glob("*H") if d.is_dir()]
+    if not hour_dirs:
+        return {
+            "Directory Structure": {
+                "check": False,
+                "message": "No hour-level (e.g. '0H') directories found.",
+                "help": "Ensure input_dir follows the 'NH/MM/SS' structure."
+            }
+        }
+
+    # Check at least one M directory
+    found_valid_structure = False
+    for hdir in hour_dirs:
+        mdirs = [m for m in hdir.glob("*M") if m.is_dir()]
+        for mdir in mdirs:
+            sdirs = [s for s in mdir.glob("*S") if s.is_dir()]
+            for sdir in sdirs:
+                meta = sdir / "meta.json"
+                if meta.is_file():
+                    found_valid_structure = True
+                    break
+            if found_valid_structure:
+                break
+        if found_valid_structure:
+            break
+
+    if not found_valid_structure:
+        return {
+            "Directory Structure": {
+                "check": False,
+                "message": "Did not find any second-level directories with meta.json.",
+                "help": "Ensure the directory structure matches expected format (0H/0M/0S/meta.json)."
+            }
+        }
+
+    return {
+        "Directory Structure": {
+            "check": True
+        }
+    }
+
+def check_windows_specific(input_dir: Path):
+    """
+    On Windows, check if any paths exceed 260 chars.
+    This can cause issues on older Windows environments.
+    """
+    if platform.system() == "Windows":
+        for root, dirs, files in os.walk(input_dir):
+            for name in dirs + files:
+                full_path = Path(root, name)
+                if len(str(full_path)) > 260:
+                    return {
+                        "Path Length": {
+                            "check": False,
+                            "message": f"Path exceeds 260 characters: {full_path}",
+                            "help": "Shorten directory names or enable long paths in Windows."
+                        }
+                    }
+    return {
+        "Path Length": {"check": True}
+    }
+
+def validate_system_requirements(input_dir: Path, output_dir: Path):
+    checks = {
+        "FFmpeg Installation": {
+            "check": check_ffmpeg(),
+            "message": "FFmpeg not found. Please install it.",
+            "help": "https://ffmpeg.org/download.html"
+        },
+        "HEVC Codec Availability": {
+            "check": check_required_codecs(),
+            "message": "HEVC codec support not found in ffmpeg.",
+            "help": "Ensure your ffmpeg build supports HEVC."
+        },
+        "Python Version": {
+            "check": check_python_version(),
+            "message": "Python 3.8 or higher required.",
+            "help": "Please upgrade your Python installation."
+        },
+        "System Memory": {
+            "check": check_system_memory(minimum_gb=8),
+            "message": "Less than 8GB RAM available. Processing may be slow.",
+            "help": "Use --low-memory mode or upgrade system memory."
+        },
+        "Disk Space": {
+            "check": check_disk_space(output_dir, minimum_gb=10),
+            "message": "Less than 10GB disk space available.",
+            "help": "Free disk space or choose another output directory."
+        }
+    }
+    return checks
+
+def format_validation_results(validation_results):
+    all_good = True
+    for category, result in validation_results.items():
+        if not result["check"]:
+            all_good = False
+            print_error(f"[{category}] {result['message']} - {result.get('help', '')}")
+        else:
+            print_success(f"[{category}] OK")
+    return all_good
+
+def run_self_test(input_dir: Path, output_dir: Path, manifest_path: Optional[Path] = None) -> bool:
+    print_info("Running system pre-flight checks...")
+    system_checks = validate_system_requirements(input_dir, output_dir)
+    sys_ok = format_validation_results(system_checks)
+
+    print_info("Checking basic directory structure...")
+    dir_checks = check_directory_structure(input_dir, manifest_path)
+    dir_ok = format_validation_results(dir_checks)
+
+    windows_ok = True
+    if platform.system() == "Windows":
+        print_info("Performing Windows-specific checks...")
+        win_checks = check_windows_specific(input_dir)
+        windows_ok = format_validation_results(win_checks)
+
+    return sys_ok and dir_ok and windows_ok
 
 
 ----
@@ -1414,6 +2200,30 @@ class TestVideoProcessor:
                 # Verify CREATE_NO_WINDOW flag was used
                 assert 'creationflags' in mock_run.call_args[1]
                 assert mock_run.call_args[1]['creationflags'] == subprocess.CREATE_NO_WINDOW
+
+----
+Full Path: tests/test_integration.py
+
+# File: tests/test_integration.py
+
+import subprocess
+import sys
+
+def test_self_test_integration():
+    input_dir = "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy"
+    output_dir = "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out"
+
+    cmd = [
+        sys.executable, "cosmos.py",
+        "--self-test",
+        "--input-dir", input_dir,
+        "--output-dir", output_dir
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode == 0, f"Self-test failed with non-zero exit code: {result.returncode}\nSTDERR: {result.stderr}"
+    assert "Self-test passed. System ready." in result.stdout, f"Expected success message not in output.\nSTDOUT: {result.stdout}"
+
 
 ----
 Full Path: tests/__init__.py

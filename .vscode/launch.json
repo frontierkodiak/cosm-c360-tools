@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": ["--input-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy", "--output-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out"]
+        },
+        {
+            "name": "Run Cosmos Self-Test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "cosmos.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--self-test",
+                "--input-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy",
+                "--output-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out"
+            ]
+        },
+        {
+            "name": "Run Cosmos Interactive",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "cosmos.py",
+            "console": "integratedTerminal",
+            "args": ["--interactive"]
+        },
+        {
+            "name": "Run Tests (Pytest)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "pytest",
+            "console": "integratedTerminal",
+            "args": [
+                "tests",
+                "-v"
+            ]
+        }
+    ]
+}
