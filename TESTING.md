@@ -61,3 +61,41 @@ If the integration test fails, ensure that:
   ```bash
   pytest -k test_self_test_integration
   ```
+
+## Inspecting Output Files
+
+To inspect the processed MP4 files and verify their contents, you can use FFmpeg's ffprobe tool:
+
+```bash
+# Get detailed information about the video file
+ffprobe -v error -show_format -show_streams output.mp4
+
+# Get just the duration and basic format info
+ffprobe -v error -show_entries format=duration,size,bit_rate -of default=noprint_wrappers=1 output.mp4
+
+# Show frame information (useful for debugging black frames)
+ffprobe -v error -show_frames -of compact output.mp4
+
+# Quick visual check of frames (requires display)
+ffplay output.mp4
+```
+
+Common issues to check for:
+- Duration matches expected clip length
+- Video codec is h264
+- Frame rate is correct (typically 59.94/60fps for COSM footage)
+- Resolution matches expected output (e.g., 3840x2160)
+  - COSM output is 9280x6300 (total of the four streams is 9344x6364, but we crop 32px from interior of each stream)
+- Presence of video stream (missing video stream but present audio can indicate encoding issues)
+
+Example of checking a specific file:
+```bash
+# Check if file contains valid video stream
+ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate -of default=noprint_wrappers=1 output.mp4
+```
+
+# DEV
+Copy test results from blade to local machine:
+```bash
+rsync -avz caleb@blade:/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out/ ~/cosmos_tests/test0/
+```

@@ -1,4 +1,6 @@
 *_export.txt
+*.ts:Zone.Identifier
+*Zone.Identifier
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

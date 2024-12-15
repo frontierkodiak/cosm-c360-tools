@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 from datetime import datetime
+import logging
 
 from .manifest import ClipInfo, ClipStatus, Position, ManifestParser
 
@@ -13,7 +14,7 @@ class ValidationLevel(Enum):
     """Severity level for validation issues"""
     ERROR = "error"          # Fatal issue, cannot proceed
     WARNING = "warning"      # Potential issue, can proceed with caution
-    INFO = "info"           # Informational note
+    INFO = "info"            # Informational note
 
 @dataclass
 class ValidationIssue:
@@ -44,7 +45,11 @@ class SegmentInfo:
     @property
     def has_all_files(self) -> bool:
         """Check if all expected .ts files are present"""
-        return len(self.ts_files) == self.frame_count
+        # Note: This check is no longer strictly 1:1 files to frames,
+        # because each .ts file can contain multiple frames.
+        # If desired, we can remove or adjust this method.
+        return True  # For now, we always consider that we have all files. 
+                     # Validation is handled by the increments vs expected_frames check.
 
 @dataclass
 class ClipValidationResult:
@@ -98,6 +103,7 @@ class InputValidator:
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.manifest_parser = manifest_parser
+        self.logger = logging.getLogger(__name__)
         
     def validate_system(self) -> List[ValidationIssue]:
         """Check system requirements"""
@@ -139,25 +145,32 @@ class InputValidator:
         return issues
     
     def validate_segment(self, 
-                        segment_dir: Path) -> Optional[SegmentInfo]:
+                         segment_dir: Path,
+                         clip_fps: int) -> Optional[SegmentInfo]:
         """
-        Validate a segment directory and its meta.json
+        Validate a segment directory and its meta.json using the clip-level FPS.
         
         Args:
             segment_dir: Path to segment directory
+            clip_fps: Frames per second derived from the entire clip
             
         Returns:
             SegmentInfo if valid, None if invalid
         """
         meta_path = segment_dir / "meta.json"
+        self.logger.debug(f"Validating segment at {segment_dir}")
+        
         if not meta_path.is_file():
+            self.logger.debug(f"No meta.json found in {segment_dir}")
             return None
-            
+        
         try:
-            with open(meta_path) as f:
+            with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
+                self.logger.debug(f"Loaded meta.json: {meta}")
                 
             if "Time" not in meta or "x0" not in meta["Time"] or "xi-x0" not in meta["Time"]:
+                self.logger.error(f"Invalid meta.json structure in {segment_dir}")
                 return None
                 
             start_time = meta["Time"]["x0"]
@@ -165,9 +178,32 @@ class InputValidator:
             
             # Get all .ts files in directory
             ts_files = sorted(segment_dir.glob("*.ts"))
+            self.logger.debug(f"Found {len(ts_files)} .ts files in {segment_dir}")
+            
+            # Derive segment duration:
+            # Each ts file covers approximately 0.1s of real time.
+            # So, segment_duration_s = number_of_ts_files * 0.1s
+            segment_duration_s = len(ts_files) * 0.1
+            
+            # Expected frames in this segment based on clip_fps and segment duration
+            expected_frames = int(round(clip_fps * segment_duration_s))
+            
+            # Check if increments match the expected frame count
+            if len(increments) != expected_frames:
+                self.logger.warning(
+                    f"Mismatch in {segment_dir}: expected {expected_frames} frames "
+                    f"(FPS={clip_fps}, duration={segment_duration_s:.1f}s) but got {len(increments)}."
+                )
+                return None
             
             # Create timestamps for each frame
             timestamps = [start_time + inc for inc in increments]
+            
+            self.logger.debug(
+                f"Segment validation successful: start_time={start_time}, "
+                f"frame_count={len(timestamps)}, file_count={len(ts_files)}, "
+                f"expected_frames={expected_frames}"
+            )
             
             return SegmentInfo(
                 directory=segment_dir,
@@ -176,27 +212,47 @@ class InputValidator:
                 ts_files=ts_files
             )
             
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            self.logger.warning(f"Warning: failed to parse meta.json in {segment_dir}: {e}")
             return None
     
     def validate_clip(self, clip: ClipInfo) -> ClipValidationResult:
-        """
-        Validate all segments for a clip
-        
-        Args:
-            clip: ClipInfo object to validate
-            
-        Returns:
-            ClipValidationResult with validation details
-        """
+        """Validate all segments for a clip"""
         issues = []
         segments = []
         missing_positions = []
         
-        # Calculate expected segment positions
+        self.logger.debug(f"Validating clip: {clip.name}")
+        self.logger.debug(
+            f"Clip boundaries: "
+            f"start={clip.start_pos.to_string()}, "
+            f"frames={clip.start_idx}-{clip.end_idx}"
+        )
+
+        # Derive FPS from the clip
+        try:
+            clip_fps = clip.fps
+        except ValueError as e:
+            issues.append(ValidationIssue(
+                level=ValidationLevel.ERROR,
+                message=f"Cannot determine FPS for clip {clip.name}: {e}"
+            ))
+            # If we can't determine FPS, no point checking segments further
+            return ClipValidationResult(
+                clip=clip,
+                segments=[],
+                missing_segments=[],
+                issues=issues,
+                estimated_size=0
+            )
+
         start_sec = int(clip.start_pos.second)
         end_sec = int(clip.end_pos.second) if clip.end_pos else start_sec + 60
+        total_positions = end_sec - start_sec + 1
         
+        self.logger.debug(f"Scanning {total_positions} second positions")
+
+        last_success_pos = None
         for second in range(start_sec, end_sec + 1):
             pos = Position(
                 hour=clip.start_pos.hour,
@@ -204,26 +260,55 @@ class InputValidator:
                 second=second
             )
             
-            # Check if segment exists
             segment_dir = self.input_dir / pos.path_fragment()
+            self.logger.debug(f"Checking position {pos.to_string()} -> {segment_dir}")
+            
             if not segment_dir.is_dir():
+                self.logger.debug(f"Missing segment directory: {segment_dir}")
                 missing_positions.append(pos)
                 continue
-                
-            # Validate segment
-            if segment_info := self.validate_segment(segment_dir):
+
+            if segment_info := self.validate_segment(segment_dir, clip_fps):
+                self.logger.debug(
+                    f"Valid segment found: {len(segment_info.ts_files)} files, "
+                    f"{len(segment_info.frame_timestamps)} frames"
+                )
                 segments.append(segment_info)
+                last_success_pos = pos
             else:
+                self.logger.debug(f"Invalid segment at {segment_dir}")
                 issues.append(ValidationIssue(
                     level=ValidationLevel.WARNING,
                     message=f"Invalid segment at {pos.path_fragment()}",
-                    context="Missing or corrupt meta.json"
+                    context="Missing or corrupt meta.json or frame mismatch"
                 ))
-        
-        # Estimate output size (very rough approximation)
-        # Assume ~100MB per second of full-res output
+
+        # Report segment coverage
+        found_segments = len(segments)
+        if found_segments == 0:
+            self.logger.warning(f"No valid segments found for clip {clip.name}")
+        else:
+            coverage = (found_segments / total_positions) * 100
+            self.logger.info(
+                f"Clip {clip.name}: Found {found_segments}/{total_positions} "
+                f"segments ({coverage:.1f}% coverage)"
+            )
+            for segment in segments:
+                self.logger.debug(
+                    f"Segment {segment.directory.name}: "
+                    f"{len(segment.ts_files)} files, "
+                    f"time range: {segment.start_time:.3f}-{segment.end_time:.3f}"
+                )
+
+        # Estimate output size (very rough)
         estimated_size = len(segments) * 100 * 1024 * 1024
-        
+
+        # Update clip end info if we have segments
+        if segments:
+            clip.end_epoch = segments[-1].end_time
+            if last_success_pos:
+                clip.end_pos = last_success_pos
+
         return ClipValidationResult(
             clip=clip,
             segments=segments,

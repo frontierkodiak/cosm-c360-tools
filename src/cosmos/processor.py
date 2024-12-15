@@ -62,6 +62,9 @@ class VideoProcessor:
         self.options = options
         self.logger = logger or logging.getLogger(__name__)
         self._available_encoders = self._detect_encoders()
+        
+        self.logger.debug(f"Initialized VideoProcessor with options: {options}")
+        self.logger.debug(f"Available encoders: {[e.value for e in self._available_encoders]}")
 
     def _detect_encoders(self) -> List[EncoderType]:
         """
@@ -144,13 +147,8 @@ class VideoProcessor:
 
     def _build_filter_complex(self, 
                             crop_overlap: int = 32) -> str:
-        """
-        Build ffmpeg filter complex for tile processing.
-        
-        Args:
-            crop_overlap: Pixels to crop from overlapping edges
-        """
-        return (
+        """Build ffmpeg filter complex for tile processing."""
+        filter_complex = (
             # Crop overlapping regions from tiles
             "[0:v:0]crop=iw-{overlap}:ih-{overlap}:0:0[tl];"
             "[0:v:1]crop=iw-{overlap}:ih-{overlap}:{overlap}:0[tr];"
@@ -162,6 +160,9 @@ class VideoProcessor:
             # Stack rows vertically
             "[top][bottom]vstack=2"
         ).format(overlap=crop_overlap)
+        
+        self.logger.debug(f"Generated filter complex:\n{filter_complex}")
+        return filter_complex
 
     def _create_concat_file(self, segments: List[SegmentInfo]) -> Path:
         """Create temporary concat file for ffmpeg"""
@@ -179,15 +180,7 @@ class VideoProcessor:
 
     def process_clip(self,
                     clip_result: ClipValidationResult) -> ProcessingResult:
-        """
-        Process a validated clip.
-        
-        Args:
-            clip_result: Validated clip information
-            
-        Returns:
-            ProcessingResult with status and output details
-        """
+        """Process a validated clip."""
         try:
             output_path = self.output_dir / f"{clip_result.clip.name}.mp4"
             concat_file = self._create_concat_file(clip_result.segments)
@@ -200,6 +193,14 @@ class VideoProcessor:
                 thread_count = max(1, total_threads // 2)
             else:
                 thread_count = None
+                
+            self.logger.debug(f"Processing clip {clip_result.clip.name}")
+            self.logger.debug(f"Created concat file at {concat_file}")
+            self.logger.debug(f"Output will be written to {output_path}")
+            
+            # Log concat file contents for debugging
+            with open(concat_file, 'r') as f:
+                self.logger.debug(f"Concat file contents:\n{f.read()}")
                 
             success = False
             error_messages = []
@@ -222,12 +223,12 @@ class VideoProcessor:
                     ) else None
                     
                     cmd.extend(self._get_encoder_settings(encoder, use_threads))
-                    
-                    # Add output path
                     cmd.append(str(output_path))
                     
                     # Run ffmpeg with proper subprocess configuration for Windows
                     self.logger.info(f"Processing {clip_result.clip.name} with {encoder.value}")
+                    # Log the complete ffmpeg command
+                    self.logger.debug(f"Executing ffmpeg command:\n{' '.join(cmd)}")
                     subprocess.run(
                         cmd,
                         check=True,
@@ -235,15 +236,22 @@ class VideoProcessor:
                         text=True,
                         encoding='utf-8',
                         errors='replace',
-                        # Prevent console window on Windows
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                     )
+                    
+                    # # Log ffmpeg output
+                    # if result.stdout:
+                    #     self.logger.debug(f"FFmpeg stdout:\n{result.stdout}")
+                    # if result.stderr:
+                    #     self.logger.debug(f"FFmpeg stderr:\n{result.stderr}")
                     
                     success = True
                     break
                     
                 except subprocess.SubprocessError as e:
-                    error_messages.append(f"{encoder.value}: {e}")
+                    error_msg = f"{encoder.value}: {e}"
+                    self.logger.error(f"Encoder failed: {error_msg}")
+                    error_messages.append(error_msg)
                     continue
                 
             if not success:

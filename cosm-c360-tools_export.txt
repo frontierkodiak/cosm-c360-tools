@@ -1,25 +1,19 @@
 Directory tree, stemming from root "/home/caleb/repo/cosm-c360-tools":
 ├── README.md (169 lines)
-├── TESTING.md (63)
+├── TESTING.md (102)
 ├── cosmos.py (92)
+├── debug.md (28)
 ├── dev.md (349)
 ├── pyproject.toml (11)
-├── src (1230)
-│   └── cosmos (1230)
-│       │   ├── __init__.py (1)
-│       │   ├── cli.py (176)
-│       │   ├── manifest.py (204)
-│       │   ├── preflight.py (197)
-│       │   ├── processor.py (280)
-│       │   ├── utils.py (94)
-│       │   └── validation.py (278)
-└── tests (550)
-    │   ├── __init__.py (1)
-    │   ├── test_data (0)
-    │   ├── test_integration.py (20)
-    │   ├── test_manifest.py (117)
-    │   ├── test_processing.py (214)
-    │   └── test_validation.py (198)
+└── src (1319)
+    │   └── cosmos (1319)
+    │       │   ├── __init__.py (1)
+    │       │   ├── cli.py (175)
+    │       │   ├── manifest.py (231)
+    │       │   ├── preflight.py (197)
+    │       │   ├── processor.py (288)
+    │       │   ├── utils.py (94)
+    │       │   └── validation.py (333)
 ----
 ----
 Full Path: cosmos.py
@@ -552,6 +546,45 @@ If the integration test fails, ensure that:
   pytest -k test_self_test_integration
   ```
 
+## Inspecting Output Files
+
+To inspect the processed MP4 files and verify their contents, you can use FFmpeg's ffprobe tool:
+
+```bash
+# Get detailed information about the video file
+ffprobe -v error -show_format -show_streams output.mp4
+
+# Get just the duration and basic format info
+ffprobe -v error -show_entries format=duration,size,bit_rate -of default=noprint_wrappers=1 output.mp4
+
+# Show frame information (useful for debugging black frames)
+ffprobe -v error -show_frames -of compact output.mp4
+
+# Quick visual check of frames (requires display)
+ffplay output.mp4
+```
+
+Common issues to check for:
+- Duration matches expected clip length
+- Video codec is h264
+- Frame rate is correct (typically 59.94/60fps for COSM footage)
+- Resolution matches expected output (e.g., 3840x2160)
+  - COSM output is 9280x6300 (total of the four streams is 9344x6364, but we crop 32px from interior of each stream)
+- Presence of video stream (missing video stream but present audio can indicate encoding issues)
+
+Example of checking a specific file:
+```bash
+# Check if file contains valid video stream
+ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate -of default=noprint_wrappers=1 output.mp4
+```
+
+# DEV
+Copy test results from blade to local machine:
+```bash
+rsync -avz caleb@blade:/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out/ ~/cosmos_tests/test0/
+```
+
+
 ----
 Full Path: README.md
 
@@ -726,6 +759,38 @@ This runs the test suite (unit tests for validation, processing, manifest parsin
 - If you wish to contribute or request features, please open an issue or a pull request.
 
 ----
+Full Path: debug.md
+
+The output clips have all-black frames. We need to narrow down the cause.
+- The filter complex we are using here has no meaningful difference from the filter complex in the previous (known-good) version from the standalone version of the script.
+
+
+
+
+
+
+# DEBUGGING
+
+## Test Each Tile Individually:
+Extract and encode just [0:v:0] without cropping:
+
+```bash
+ffmpeg -i /datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy/0H/0M/0S/0.ts -map 0:v:0 -c copy single_tile_0.mp4 \
+&& ffmpeg -i /datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy/0H/0M/0S/0.ts -map 0:v:1 -c copy single_tile_1.mp4 \
+&& ffmpeg -i /datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy/0H/0M/0S/0.ts -map 0:v:2 -c copy single_tile_2.mp4 \
+&& ffmpeg -i /datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy/0H/0M/0S/0.ts -map 0:v:3 -c copy single_tile_3.mp4
+```
+Check if single_tile_0.mp4 shows any content. Repeat for [0:v:1], [0:v:2], and [0:v:3].
+
+**RESULT**:
+- single_tile_0.mp4 shows content
+- single_tile_1.mp4 shows content
+- single_tile_2.mp4 shows content
+- single_tile_3.mp4 shows content
+All look correct.
+
+
+----
 Full Path: src/cosmos/validation.py
 
 from dataclasses import dataclass
@@ -736,6 +801,7 @@ import json
 import shutil
 import subprocess
 from datetime import datetime
+import logging
 
 from .manifest import ClipInfo, ClipStatus, Position, ManifestParser
 
@@ -828,6 +894,7 @@ class InputValidator:
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.manifest_parser = manifest_parser
+        self.logger = logging.getLogger(__name__)
         
     def validate_system(self) -> List[ValidationIssue]:
         """Check system requirements"""
@@ -880,14 +947,19 @@ class InputValidator:
             SegmentInfo if valid, None if invalid
         """
         meta_path = segment_dir / "meta.json"
+        self.logger.debug(f"Validating segment at {segment_dir}")
+        
         if not meta_path.is_file():
+            self.logger.debug(f"No meta.json found in {segment_dir}")
             return None
-            
+        
         try:
             with open(meta_path) as f:
                 meta = json.load(f)
+                self.logger.debug(f"Loaded meta.json: {meta}")
                 
             if "Time" not in meta or "x0" not in meta["Time"] or "xi-x0" not in meta["Time"]:
+                self.logger.error(f"Invalid meta.json structure in {segment_dir}")
                 return None
                 
             start_time = meta["Time"]["x0"]
@@ -895,9 +967,24 @@ class InputValidator:
             
             # Get all .ts files in directory
             ts_files = sorted(segment_dir.glob("*.ts"))
+            self.logger.debug(f"Found {len(ts_files)} .ts files in {segment_dir}")
             
             # Create timestamps for each frame
             timestamps = [start_time + inc for inc in increments]
+            
+            # Validate frame count matches file count
+            if len(ts_files) != len(increments):
+                self.logger.warning(
+                    f"Mismatch in {segment_dir}: "
+                    f"{len(ts_files)} .ts files but {len(increments)} frame timestamps"
+                )
+            
+            self.logger.debug(
+                f"Segment validation successful: "
+                f"start_time={start_time}, "
+                f"frame_count={len(timestamps)}, "
+                f"file_count={len(ts_files)}"
+            )
             
             return SegmentInfo(
                 directory=segment_dir,
@@ -906,27 +993,31 @@ class InputValidator:
                 ts_files=ts_files
             )
             
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            self.logger.warning(f"Warning: failed to parse meta.json in {segment_dir}: {e}")
+            # Note: this might be better as a .debug log, but we should tell user proportion of failed segments for each clip in the manifest
             return None
     
     def validate_clip(self, clip: ClipInfo) -> ClipValidationResult:
-        """
-        Validate all segments for a clip
-        
-        Args:
-            clip: ClipInfo object to validate
-            
-        Returns:
-            ClipValidationResult with validation details
-        """
+        """Validate all segments for a clip"""
         issues = []
         segments = []
         missing_positions = []
         
-        # Calculate expected segment positions
+        self.logger.debug(f"Validating clip: {clip.name}")
+        self.logger.debug(
+            f"Clip boundaries: "
+            f"start={clip.start_pos.to_string()}, "
+            f"frames={clip.start_idx}-{clip.end_idx}"
+        )
+
         start_sec = int(clip.start_pos.second)
         end_sec = int(clip.end_pos.second) if clip.end_pos else start_sec + 60
+        total_positions = end_sec - start_sec + 1
         
+        self.logger.debug(f"Scanning {total_positions} second positions")
+
+        last_success_pos = None
         for second in range(start_sec, end_sec + 1):
             pos = Position(
                 hour=clip.start_pos.hour,
@@ -934,26 +1025,55 @@ class InputValidator:
                 second=second
             )
             
-            # Check if segment exists
             segment_dir = self.input_dir / pos.path_fragment()
+            self.logger.debug(f"Checking position {pos.to_string()} -> {segment_dir}")
+            
             if not segment_dir.is_dir():
+                self.logger.debug(f"Missing segment directory: {segment_dir}")
                 missing_positions.append(pos)
                 continue
-                
-            # Validate segment
+
             if segment_info := self.validate_segment(segment_dir):
+                self.logger.debug(
+                    f"Valid segment found: {len(segment_info.ts_files)} files, "
+                    f"{len(segment_info.frame_timestamps)} frames"
+                )
                 segments.append(segment_info)
+                last_success_pos = pos
             else:
+                self.logger.debug(f"Invalid segment at {segment_dir}")
                 issues.append(ValidationIssue(
                     level=ValidationLevel.WARNING,
                     message=f"Invalid segment at {pos.path_fragment()}",
                     context="Missing or corrupt meta.json"
                 ))
-        
-        # Estimate output size (very rough approximation)
-        # Assume ~100MB per second of full-res output
+
+        # Report segment coverage
+        found_segments = len(segments)
+        if found_segments == 0:
+            self.logger.warning(f"No valid segments found for clip {clip.name}")
+        else:
+            coverage = (found_segments / total_positions) * 100
+            self.logger.info(
+                f"Clip {clip.name}: Found {found_segments}/{total_positions} "
+                f"segments ({coverage:.1f}% coverage)"
+            )
+            for segment in segments:
+                self.logger.debug(
+                    f"Segment {segment.directory.name}: "
+                    f"{len(segment.ts_files)} files, "
+                    f"time range: {segment.start_time:.3f}-{segment.end_time:.3f}"
+                )
+
+        # Estimate output size (very rough)
         estimated_size = len(segments) * 100 * 1024 * 1024
-        
+
+        # Update clip end info if we have segments
+        if segments:
+            clip.end_epoch = segments[-1].end_time
+            if last_success_pos:
+                clip.end_pos = last_success_pos
+
         return ClipValidationResult(
             clip=clip,
             segments=segments,
@@ -1114,6 +1234,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
+import logging
 
 
 class ClipStatus(Enum):
@@ -1160,7 +1281,10 @@ class Position:
     def to_seconds(self) -> float:
         """Convert position to total seconds from start of hour"""
         return self.hour * 3600 + self.minute * 60 + self.second
-
+    
+    def path_fragment(self) -> str:
+        """Return a directory path fragment like '0H/0M/25S'."""
+        return f"{self.hour}H/{self.minute}M/{self.second}S"
 
 @dataclass
 class ClipInfo:
@@ -1200,12 +1324,13 @@ class ManifestParser:
     the directory structure.
     """
     
-    def __init__(self, manifest_path: Path):
+    def __init__(self, manifest_path: Path, logger: Optional[logging.Logger] = None):
         """
         Initialize parser with path to manifest XML.
         
         Args:
             manifest_path: Path to the manifest XML file
+            logger: Optional logger instance
             
         Raises:
             FileNotFoundError: If manifest file doesn't exist
@@ -1213,6 +1338,7 @@ class ManifestParser:
         """
         self.manifest_path = manifest_path
         self._clips: Dict[str, ClipInfo] = {}
+        self.logger = logger or logging.getLogger(__name__)
         
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest not found: {manifest_path}")
@@ -1233,9 +1359,15 @@ class ManifestParser:
         tree = ET.parse(self.manifest_path)
         root = tree.getroot()
         
+        self.logger.debug(f"Parsing manifest: {self.manifest_path}")
+        self.logger.debug(f"Found {len(root)} clip entries in manifest")
+        
         for elem in root:
             try:
                 name = elem.attrib['Name']
+                self.logger.debug(f"Parsing clip: {name}")
+                self.logger.debug(f"Raw attributes: {elem.attrib}")
+                
                 start_epoch = float(elem.attrib['Epoch'])
                 pos = Position.from_string(elem.attrib['Pos'])
                 start_idx = int(elem.attrib['InIdx'])
@@ -1257,10 +1389,25 @@ class ManifestParser:
                     start_time=start_time
                 )
                 
+                self.logger.debug(
+                    f"Parsed {name}: start_epoch={start_epoch}, "
+                    f"pos={pos.to_string()}, "
+                    f"frame_range={start_idx}-{end_idx}"
+                )
+                
             except (KeyError, ValueError) as e:
                 # Log warning but continue parsing other clips
-                print(f"Warning: Failed to parse clip element: {e}")
+                self.logger.warning(f"Warning: failed to parse clip element: {e}")
                 continue
+        
+        self.logger.info(f"Successfully parsed {len(self._clips)} clips from manifest")
+        for name, clip in self._clips.items():
+            self.logger.info(
+                f"Clip {name}: "
+                f"start={clip.start_time}, "
+                f"frames={clip.frame_count}, "
+                f"pos={clip.start_pos.to_string()}"
+            )
     
     def get_clip(self, name: str) -> Optional[ClipInfo]:
         """Get information for a specific clip by name"""
@@ -1319,26 +1466,21 @@ Full Path: src/cosmos/cli.py
 # File: src/cosmos/cli.py
 
 import argparse
-from pathlib import Path
 import sys
-import logging
-
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Dict, Any
 
 from .utils import (
     init_logging,
     load_config,
     save_config,
-    self_test,
     check_updates,
     check_ffmpeg,
     print_info,
     print_warning,
-    print_error,
-    print_success
+    print_error
 )
 
-# questionary is optional, ensure safe import:
 try:
     import questionary
 except ImportError:
@@ -1355,14 +1497,15 @@ def parse_args():
     parser.add_argument("--interactive", action="store_true", help="Run in interactive mode")
     parser.add_argument("--self-test", action="store_true", help="Run a self-test and exit")
     parser.add_argument("--check-updates", action="store_true", help="Check for updates and exit")
+    parser.add_argument("--job-name", type=str, help="A name for this job, used for logs and output notes")
 
     return parser.parse_args()
 
-def run_interactive_mode(config: dict) -> dict:
+def run_interactive_mode(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Run an interactive session to gather input_dir, output_dir, and other settings.
     Uses questionary for cross-platform interactive prompts.
-    If questionary not installed, fallback is to print an error and exit.
+    If questionary is not installed, print an error and exit.
     """
     if questionary is None:
         print_error("Interactive mode requested but 'questionary' is not installed.")
@@ -1376,16 +1519,27 @@ def run_interactive_mode(config: dict) -> dict:
         default=str(config.get("input_dir", ""))
     ).ask()
 
+    if not input_dir:
+        print_error("No input directory specified.")
+        sys.exit(1)
+
     # Prompt for output directory
     output_dir = questionary.path(
         "Please select the output directory for processed files:",
         default=str(config.get("output_dir", ""))
     ).ask()
 
+    if not output_dir:
+        print_error("No output directory specified.")
+        sys.exit(1)
+
     # Confirm ffmpeg available
     if not check_ffmpeg():
         print_warning("FFmpeg not found. Please install it before proceeding.")
-        questionary.confirm("Do you want to continue anyway?", default=False).ask()
+        cont = questionary.confirm("Do you want to continue anyway?", default=False).ask()
+        if not cont:
+            print_info("Aborted due to missing FFmpeg.")
+            sys.exit(1)
 
     # Prompt for log level
     log_level = questionary.select(
@@ -1394,15 +1548,24 @@ def run_interactive_mode(config: dict) -> dict:
         default=config.get("log_level", "INFO")
     ).ask()
 
+    # Prompt for job name
+    job_name = questionary.text(
+        "Job name (optional):",
+        default=str(config.get("job_name", ""))
+    ).ask()
+
     config["input_dir"] = input_dir
     config["output_dir"] = output_dir
     config["log_level"] = log_level
+    if job_name:
+        config["job_name"] = job_name
 
-    # Confirm final settings
     print_info("Review your settings:")
     print_info(f"  Input Directory: {config['input_dir']}")
     print_info(f"  Output Directory: {config['output_dir']}")
     print_info(f"  Log Level: {config['log_level']}")
+    if "job_name" in config:
+        print_info(f"  Job Name: {config['job_name']}")
     confirm = questionary.confirm("Proceed with these settings?", default=True).ask()
 
     if not confirm:
@@ -1411,14 +1574,19 @@ def run_interactive_mode(config: dict) -> dict:
 
     return config
 
-def main():
+def run_cli() -> Dict[str, Any]:
+    """
+    Parse command-line arguments, handle interactive mode if requested,
+    load configuration files if provided, and return a final config dict
+    for use by cosmos.py.
+    """
     args = parse_args()
 
     # Load config if provided
     config_path = Path(args.config_file) if args.config_file else None
     config = load_config(config_path) if config_path else {}
 
-    # Command line args override config or fill in missing fields
+    # CLI args override config values
     if args.log_level:
         config["log_level"] = args.log_level
     if args.log_file:
@@ -1429,19 +1597,15 @@ def main():
         config["output_dir"] = args.output_dir
     if args.manifest:
         config["manifest"] = args.manifest
+    if args.job_name:
+        config["job_name"] = args.job_name
 
-    # Initialize logging
+    # Initialize logging early so we can log further steps
     logfile = Path(config["log_file"]) if "log_file" in config else None
     logger = init_logging(level=config.get("log_level", "INFO"), logfile=logfile)
 
-    # Handle special commands first
-    if args.self_test:
-        success = self_test(
-            input_dir=Path(config["input_dir"]) if "input_dir" in config else None,
-            output_dir=Path(config["output_dir"]) if "output_dir" in config else None
-        )
-        sys.exit(0 if success else 1)
-
+    # Handle special commands that do not require proceeding to processing
+    # (NOTE: Self-test is now handled in cosmos.py, not here)
     if args.check_updates:
         check_updates()
         sys.exit(0)
@@ -1450,7 +1614,7 @@ def main():
     if args.interactive:
         config = run_interactive_mode(config)
 
-    # Validate that we have required directories
+    # Validate directories are set
     if "input_dir" not in config or not config["input_dir"]:
         print_error("Input directory not specified. Use --input-dir or run in interactive mode.")
         sys.exit(1)
@@ -1459,38 +1623,20 @@ def main():
         print_error("Output directory not specified. Use --output-dir or run in interactive mode.")
         sys.exit(1)
 
-    input_dir = Path(config["input_dir"])
-    output_dir = Path(config["output_dir"])
-
     # Save updated config if config file provided
     if config_path:
         save_config(config_path, config)
 
-    # From here we would:
-    # 1. Use manifest parser to find or load manifest.
-    # 2. Validate inputs using InputValidator.
-    # 3. Process clips using VideoProcessor.
-    #
-    # For now, we'll just log that we've completed CLI argument resolution.
     logger.info("CLI argument resolution complete. Ready to proceed with processing pipeline.")
-    logger.info(f"Input Directory: {input_dir}")
-    logger.info(f"Output Directory: {output_dir}")
+    logger.info(f"Input Directory: {config['input_dir']}")
+    logger.info(f"Output Directory: {config['output_dir']}")
     if "manifest" in config:
         logger.info(f"Manifest: {config['manifest']}")
 
-    # The next step would be calling into the main cosmos pipeline (e.g. from cosmos.py)
-    # This might look like:
-    # 
-    # from .manifest import find_manifest, ManifestParser
-    # from .validation import InputValidator
-    # from .processor import VideoProcessor, ProcessingOptions, ProcessingMode
-    #
-    # # ... load manifest, validate, process, etc.
-    #
-    # For now, we leave this as is.
+    # Add self_test key so cosmos.py can check and handle it
+    config["self_test"] = args.self_test
 
-if __name__ == "__main__":
-    main()
+    return config
 
 
 ----
@@ -1761,6 +1907,9 @@ class VideoProcessor:
         self.options = options
         self.logger = logger or logging.getLogger(__name__)
         self._available_encoders = self._detect_encoders()
+        
+        self.logger.debug(f"Initialized VideoProcessor with options: {options}")
+        self.logger.debug(f"Available encoders: {[e.value for e in self._available_encoders]}")
 
     def _detect_encoders(self) -> List[EncoderType]:
         """
@@ -1843,13 +1992,8 @@ class VideoProcessor:
 
     def _build_filter_complex(self, 
                             crop_overlap: int = 32) -> str:
-        """
-        Build ffmpeg filter complex for tile processing.
-        
-        Args:
-            crop_overlap: Pixels to crop from overlapping edges
-        """
-        return (
+        """Build ffmpeg filter complex for tile processing."""
+        filter_complex = (
             # Crop overlapping regions from tiles
             "[0:v:0]crop=iw-{overlap}:ih-{overlap}:0:0[tl];"
             "[0:v:1]crop=iw-{overlap}:ih-{overlap}:{overlap}:0[tr];"
@@ -1861,6 +2005,9 @@ class VideoProcessor:
             # Stack rows vertically
             "[top][bottom]vstack=2"
         ).format(overlap=crop_overlap)
+        
+        self.logger.debug(f"Generated filter complex:\n{filter_complex}")
+        return filter_complex
 
     def _create_concat_file(self, segments: List[SegmentInfo]) -> Path:
         """Create temporary concat file for ffmpeg"""
@@ -1878,15 +2025,7 @@ class VideoProcessor:
 
     def process_clip(self,
                     clip_result: ClipValidationResult) -> ProcessingResult:
-        """
-        Process a validated clip.
-        
-        Args:
-            clip_result: Validated clip information
-            
-        Returns:
-            ProcessingResult with status and output details
-        """
+        """Process a validated clip."""
         try:
             output_path = self.output_dir / f"{clip_result.clip.name}.mp4"
             concat_file = self._create_concat_file(clip_result.segments)
@@ -1899,6 +2038,14 @@ class VideoProcessor:
                 thread_count = max(1, total_threads // 2)
             else:
                 thread_count = None
+                
+            self.logger.debug(f"Processing clip {clip_result.clip.name}")
+            self.logger.debug(f"Created concat file at {concat_file}")
+            self.logger.debug(f"Output will be written to {output_path}")
+            
+            # Log concat file contents for debugging
+            with open(concat_file, 'r') as f:
+                self.logger.debug(f"Concat file contents:\n{f.read()}")
                 
             success = False
             error_messages = []
@@ -1921,12 +2068,12 @@ class VideoProcessor:
                     ) else None
                     
                     cmd.extend(self._get_encoder_settings(encoder, use_threads))
-                    
-                    # Add output path
                     cmd.append(str(output_path))
                     
                     # Run ffmpeg with proper subprocess configuration for Windows
                     self.logger.info(f"Processing {clip_result.clip.name} with {encoder.value}")
+                    # Log the complete ffmpeg command
+                    self.logger.debug(f"Executing ffmpeg command:\n{' '.join(cmd)}")
                     subprocess.run(
                         cmd,
                         check=True,
@@ -1934,15 +2081,22 @@ class VideoProcessor:
                         text=True,
                         encoding='utf-8',
                         errors='replace',
-                        # Prevent console window on Windows
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                     )
+                    
+                    # # Log ffmpeg output
+                    # if result.stdout:
+                    #     self.logger.debug(f"FFmpeg stdout:\n{result.stdout}")
+                    # if result.stderr:
+                    #     self.logger.debug(f"FFmpeg stderr:\n{result.stderr}")
                     
                     success = True
                     break
                     
                 except subprocess.SubprocessError as e:
-                    error_messages.append(f"{encoder.value}: {e}")
+                    error_msg = f"{encoder.value}: {e}"
+                    self.logger.error(f"Encoder failed: {error_msg}")
+                    error_messages.append(error_msg)
                     continue
                 
             if not success:
@@ -1984,572 +2138,21 @@ Full Path: src/cosmos/__init__.py
 
 
 ----
-Full Path: tests/test_processing.py
+Full Path: tests/test_data/ladybird/LADYBIRD.xml
 
-# tests/test_processing.py
-import os
-from pathlib import Path
-import pytest
-import subprocess
-from unittest.mock import Mock, patch
-
-from cosmos.processor import (
-    ProcessingMode,
-    ProcessingOptions,
-    EncoderType,
-    ProcessingResult,
-    VideoProcessor
-)
-from cosmos.validation import ClipValidationResult, SegmentInfo
-from cosmos.manifest import ClipInfo, Position
-
-# Test fixtures
-@pytest.fixture
-def mock_clip_info():
-    """Create a sample ClipInfo object"""
-    return ClipInfo(
-        name="TEST_CLIP",
-        start_epoch=1723559258.022,
-        end_epoch=1723559268.022,
-        start_pos=Position(0, 0, 25.183),
-        end_pos=Position(0, 0, 35.183),
-        start_idx=1511,
-        end_idx=14273,
-        start_time=None  # Not needed for these tests
-    )
-
-@pytest.fixture
-def mock_segments(tmp_path):
-    """Create sample segment information"""
-    segments = []
-    for i in range(3):
-        segment_dir = tmp_path / f"segment_{i}"
-        segment_dir.mkdir()
-        ts_files = [
-            segment_dir / f"chunk_{j}.ts" for j in range(4)
-        ]
-        for ts_file in ts_files:
-            ts_file.touch()
-            
-        segments.append(SegmentInfo(
-            directory=segment_dir,
-            start_time=1723559258.022 + i,
-            frame_timestamps=[
-                1723559258.022 + i + j*0.017 for j in range(4)
-            ],
-            ts_files=ts_files
-        ))
-    return segments
-
-@pytest.fixture
-def mock_validation_result(mock_clip_info, mock_segments):
-    """Create a sample validation result"""
-    return ClipValidationResult(
-        clip=mock_clip_info,
-        segments=mock_segments,
-        missing_segments=[],
-        issues=[],
-        estimated_size=1000000
-    )
-
-@pytest.fixture
-def processor(tmp_path):
-    """Create a VideoProcessor instance with test configuration"""
-    options = ProcessingOptions(
-        output_resolution=(3840, 2160),
-        quality_mode=ProcessingMode.BALANCED
-    )
-    return VideoProcessor(tmp_path / "output", options)
-
-class TestVideoProcessor:
-    def test_encoder_detection(self, processor):
-        """Test encoder detection and ordering"""
-        # Mock ffmpeg -encoders output
-        ffmpeg_output = """
-        Encoders:
-         V..... libx264        x264 H.264 / AVC / MPEG-4 AVC
-         V..... h264_nvenc     NVIDIA NVENC H.264 encoder
-        """
-        
-        with patch('subprocess.run') as mock_run:
-            mock_run.return_value.stdout = ffmpeg_output
-            mock_run.return_value.returncode = 0
-            
-            encoders = processor._detect_encoders()
-            
-            assert EncoderType.NVIDIA_NVENC in encoders
-            assert EncoderType.SOFTWARE_X264 in encoders
-            assert encoders.index(EncoderType.NVIDIA_NVENC) < encoders.index(EncoderType.SOFTWARE_X264)
-
-    def test_encoder_detection_fallback(self, processor):
-        """Test fallback to software encoding when detection fails"""
-        with patch('subprocess.run') as mock_run:
-            mock_run.side_effect = subprocess.SubprocessError()
-            
-            encoders = processor._detect_encoders()
-            
-            assert len(encoders) == 1
-            assert encoders[0] == EncoderType.SOFTWARE_X264
-
-    def test_filter_complex_generation(self, processor):
-        """Test FFmpeg filter complex string generation"""
-        filter_complex = processor._build_filter_complex(crop_overlap=32)
-        
-        assert "[0:v:0]crop" in filter_complex
-        assert "hstack=2" in filter_complex
-        assert "vstack=2" in filter_complex
-
-    def test_encoder_settings_quality_modes(self, processor):
-        """Test encoder settings for different quality modes"""
-        # Test QUALITY mode
-        options = ProcessingOptions(
-            output_resolution=(3840, 2160),
-            quality_mode=ProcessingMode.QUALITY
-        )
-        processor.options = options
-        settings = processor._get_encoder_settings(EncoderType.SOFTWARE_X264)
-        assert "slower" in settings
-        assert "-crf" in settings
-        assert "18" in settings  # Highest quality CRF
-        
-        # Test PERFORMANCE mode
-        options.quality_mode = ProcessingMode.PERFORMANCE
-        settings = processor._get_encoder_settings(EncoderType.SOFTWARE_X264)
-        assert "medium" in settings
-        assert "-crf" in settings
-        assert "28" in settings  # Lower quality CRF
-
-    def test_thread_control(self, processor):
-        """Test thread control for different processing modes"""
-        import multiprocessing
-        total_threads = multiprocessing.cpu_count()
-        
-        # Test LOW_MEMORY mode
-        options = ProcessingOptions(
-            output_resolution=(3840, 2160),
-            quality_mode=ProcessingMode.LOW_MEMORY
-        )
-        processor.options = options
-        settings = processor._get_encoder_settings(
-            EncoderType.SOFTWARE_X264,
-            thread_count=total_threads // 2
-        )
-        assert "-threads" in settings
-        assert str(total_threads // 2) in settings
-        
-        # Test MINIMAL mode
-        options.quality_mode = ProcessingMode.MINIMAL
-        settings = processor._get_encoder_settings(
-            EncoderType.SOFTWARE_X264,
-            thread_count=1
-        )
-        assert "-threads" in settings
-        assert "1" in settings
-
-    @pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
-    def test_cross_platform_paths(self, processor, mock_validation_result, platform):
-        """Test path handling across different platforms"""
-        with patch('os.name', platform):
-            concat_file = processor._create_concat_file(mock_validation_result.segments)
-            
-            # Check concat file contents
-            with open(concat_file) as f:
-                content = f.read()
-                
-            # Verify forward slashes are used regardless of platform
-            assert '\\' not in content
-            assert all(line.startswith("file '") for line in content.splitlines() if line)
-
-    @patch('subprocess.run')
-    def test_process_clip(self, mock_run, processor, mock_validation_result):
-        """Test complete clip processing workflow"""
-        # Mock successful ffmpeg execution
-        mock_run.return_value.returncode = 0
-        
-        result = processor.process_clip(mock_validation_result)
-        
-        assert result.success
-        assert result.frames_processed > 0
-        assert result.output_path.name == f"{mock_validation_result.clip.name}.mp4"
-        
-        # Verify ffmpeg was called with expected arguments
-        assert mock_run.called
-        cmd_args = mock_run.call_args[0][0]
-        assert "ffmpeg" in cmd_args
-        assert "-filter_complex" in cmd_args
-        
-    @patch('subprocess.run')
-    def test_process_clip_error_handling(self, mock_run, processor, mock_validation_result):
-        """Test error handling during processing"""
-        # Mock ffmpeg failure
-        mock_run.side_effect = subprocess.CalledProcessError(1, "ffmpeg")
-        
-        result = processor.process_clip(mock_validation_result)
-        
-        assert not result.success
-        assert result.error is not None
-
-    def test_windows_specific_flags(self, processor):
-        """Test Windows-specific subprocess flags"""
-        with patch('os.name', 'nt'):
-            # Mock the processing to check command construction
-            with patch('subprocess.run') as mock_run:
-                mock_run.return_value.returncode = 0
-                processor.process_clip(mock_validation_result)
-                
-                # Verify CREATE_NO_WINDOW flag was used
-                assert 'creationflags' in mock_run.call_args[1]
-                assert mock_run.call_args[1]['creationflags'] == subprocess.CREATE_NO_WINDOW
-
-----
-Full Path: tests/test_integration.py
-
-# File: tests/test_integration.py
-
-import subprocess
-import sys
-
-def test_self_test_integration():
-    input_dir = "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy"
-    output_dir = "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out"
-
-    cmd = [
-        sys.executable, "cosmos.py",
-        "--self-test",
-        "--input-dir", input_dir,
-        "--output-dir", output_dir
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    assert result.returncode == 0, f"Self-test failed with non-zero exit code: {result.returncode}\nSTDERR: {result.stderr}"
-    assert "Self-test passed. System ready." in result.stdout, f"Expected success message not in output.\nSTDOUT: {result.stdout}"
-
-
-----
-Full Path: tests/__init__.py
-
-
-
-----
-Full Path: tests/test_validation.py
-
-# tests/test_validation.py
-import json
-from pathlib import Path
-import pytest
-import shutil
-import subprocess
-from datetime import datetime
-
-from cosmos.validation import (
-    InputValidator,
-    ValidationLevel,
-    ValidationIssue,
-    SegmentInfo,
-    ClipValidationResult,
-    ValidationResult
-)
-from cosmos.manifest import Position, ClipInfo, ManifestParser
-
-# Test fixtures
-@pytest.fixture
-def mock_input_dir(tmp_path):
-    """Create a mock input directory structure with test data"""
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    
-    # Create a simple directory structure
-    # 0H/0M/25S - 0H/0M/27S
-    base = input_dir / "0H" / "0M"
-    base.mkdir(parents=True)
-    
-    # Create segment directories with meta.json files
-    for second in range(25, 28):
-        segment_dir = base / f"{second}S"
-        segment_dir.mkdir()
-        
-        # Create meta.json
-        meta = {
-            "Time": {
-                "x0": 1723559258.0 + second,
-                "xi-x0": [0.0, 0.017, 0.033, 0.050]
-            }
-        }
-        with open(segment_dir / "meta.json", "w") as f:
-            json.dump(meta, f)
-            
-        # Create dummy .ts files
-        for i in range(4):
-            (segment_dir / f"chunk_{i}.ts").touch()
-    
-    return input_dir
-
-@pytest.fixture
-def mock_output_dir(tmp_path):
-    """Create a mock output directory"""
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    return output_dir
-
-@pytest.fixture
-def sample_manifest(tmp_path):
-    """Create a test manifest file"""
-    manifest_content = """
-    <Clip_Manifest NumDirs="498">
-      <_1 Name="CLIP1" InIdx="1511" OutIdx="14273" Locked="True" 
-          InStr="07:27:38.022 08/13/2024" Epoch="1723559258.022" 
-          Pos="0H/0M/25.1833333333333S/" />
-    </Clip_Manifest>
-    """
-    manifest_path = tmp_path / "test_manifest.xml"
-    manifest_path.write_text(manifest_content)
-    return manifest_path
-
-@pytest.fixture
-def validator(mock_input_dir, mock_output_dir, sample_manifest):
-    """Create an InputValidator instance with test data"""
-    parser = ManifestParser(sample_manifest)
-    return InputValidator(mock_input_dir, mock_output_dir, parser)
-
-class TestSegmentInfo:
-    @pytest.fixture
-    def sample_segment(self, tmp_path):
-        """Create a sample SegmentInfo object"""
-        return SegmentInfo(
-            directory=tmp_path,
-            start_time=1723559258.022,
-            frame_timestamps=[
-                1723559258.022,
-                1723559258.039,
-                1723559258.056
-            ],
-            ts_files=[
-                tmp_path / "1.ts",
-                tmp_path / "2.ts",
-                tmp_path / "3.ts"
-            ]
-        )
-    
-    def test_end_time(self, sample_segment):
-        assert sample_segment.end_time == 1723559258.056
-        
-    def test_frame_count(self, sample_segment):
-        assert sample_segment.frame_count == 3
-        
-    def test_has_all_files(self, sample_segment):
-        assert sample_segment.has_all_files is True
-
-class TestInputValidator:
-    def test_validate_system_ffmpeg_missing(self, validator, monkeypatch):
-        """Test system validation when ffmpeg is not available"""
-        def mock_run(*args, **kwargs):
-            raise FileNotFoundError()
-            
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        issues = validator.validate_system()
-        
-        assert any(
-            issue.level == ValidationLevel.ERROR and "FFmpeg" in issue.message
-            for issue in issues
-        )
-    
-    def test_validate_segment_valid(self, validator, mock_input_dir):
-        """Test validation of a valid segment directory"""
-        segment_dir = mock_input_dir / "0H" / "0M" / "25S"
-        segment_info = validator.validate_segment(segment_dir)
-        
-        assert segment_info is not None
-        assert segment_info.frame_count == 4
-        assert len(segment_info.ts_files) == 4
-        
-    def test_validate_segment_invalid_meta(self, mock_input_dir):
-        """Test validation with invalid meta.json"""
-        segment_dir = mock_input_dir / "0H" / "0M" / "25S"
-        
-        # Corrupt meta.json
-        with open(segment_dir / "meta.json", "w") as f:
-            f.write("invalid json")
-            
-        validator = InputValidator(
-            mock_input_dir,
-            mock_input_dir / "output",
-            ManifestParser(mock_input_dir / "manifest.xml")
-        )
-        
-        segment_info = validator.validate_segment(segment_dir)
-        assert segment_info is None
-    
-    def test_validate_clip(self, validator):
-        """Test validation of a complete clip"""
-        clip = validator.manifest_parser.get_clips()[0]
-        result = validator.validate_clip(clip)
-        
-        assert isinstance(result, ClipValidationResult)
-        assert len(result.segments) > 0
-        assert result.is_valid
-        
-    def test_validate_clip_missing_segments(self, validator, mock_input_dir):
-        """Test validation with missing segments"""
-        # Remove a segment directory
-        shutil.rmtree(mock_input_dir / "0H" / "0M" / "26S")
-        
-        clip = validator.manifest_parser.get_clips()[0]
-        result = validator.validate_clip(clip)
-        
-        assert not result.is_valid
-        assert len(result.missing_segments) > 0
-        
-    def test_validate_all(self, validator):
-        """Test complete validation process"""
-        result = validator.validate_all()
-        
-        assert isinstance(result, ValidationResult)
-        assert result.can_proceed
-        assert result.available_space > 0
-        assert result.total_size_estimate > 0
-        
-    def test_validation_with_no_space(self, validator, monkeypatch):
-        """Test validation when disk space is insufficient"""
-        def mock_disk_usage(*args):
-            return type('Usage', (), {'free': 0})()
-            
-        monkeypatch.setattr(shutil, "disk_usage", mock_disk_usage)
-        
-        result = validator.validate_all()
-        assert not result.can_proceed
-
-def test_validation_issue_creation():
-    """Test ValidationIssue creation and attributes"""
-    issue = ValidationIssue(
-        level=ValidationLevel.ERROR,
-        message="Test error",
-        context="Test context",
-        help_text="Test help"
-    )
-    
-    assert issue.level == ValidationLevel.ERROR
-    assert issue.message == "Test error"
-    assert issue.context == "Test context"
-    assert issue.help_text == "Test help"
-
-----
-Full Path: tests/test_manifest.py
-
-# tests/test_manifest.py
-from pathlib import Path
-import pytest
-from datetime import datetime
-from cosmos.manifest import (
-    Position, 
-    ClipInfo, 
-    ClipStatus, 
-    ManifestParser, 
-    find_manifest
-)
-
-# Test data
-SAMPLE_MANIFEST = """
 <Clip_Manifest NumDirs="498">
   <_1 Name="CLIP2" In="1.6261465427355111E-307" InIdx="228" Out="1.6261466707242047E-307" OutIdx="4110" Locked="True" InStr="07:27:16.618 08/13/2024" Epoch="1723559236.618" Pos="0H/0M/3.8S/" />
   <_2 Name="CLIP1" In="1.6261465850368715E-307" InIdx="1511" Out="1.6261470057932999E-307" OutIdx="14273" Locked="True" InStr="07:27:38.022 08/13/2024" Epoch="1723559258.0219998" Pos="0H/0M/25.1833333333333S/" />
+  <_3 Name="CLIP3" In="1.6261501214407288E-307" InIdx="14658" Out="1.6261501214407288E-307" OutIdx="14658" Locked="True" InStr="07:57:27.463 08/13/2024" Epoch="1723561047.4629998" Pos="0H/4M/4.30000000000001S/" />
+  <_4 Name="CLIP4" In="1.6261504029336424E-307" InIdx="15096" Out="1.6261504567393675E-307" OutIdx="16728" Locked="True" InStr="07:59:49.900 08/13/2024" Epoch="1723561189.8999999" Pos="0H/4M/11.6S/" />
+  <_5 Name="CLIP6" In="1.626151890120643E-307" InIdx="17124" Out="1.6261520105896575E-307" OutIdx="20778" Locked="True" InStr="08:12:22.425 08/13/2024" Epoch="1723561942.425" Pos="0H/4M/45.4S/" />
+  <_6 Name="CLIP7" In="1.6261529151745092E-307" InIdx="21221" Out="1.6261531935026773E-307" OutIdx="29663" Locked="True" InStr="08:21:01.108 08/13/2024" Epoch="1723562461.108" Pos="0H/5M/53.6833333333333S/" />
 </Clip_Manifest>
-"""
 
-@pytest.fixture
-def sample_manifest(tmp_path):
-    """Create a temporary manifest file for testing"""
-    manifest_path = tmp_path / "test_manifest.xml"
-    manifest_path.write_text(SAMPLE_MANIFEST)
-    return manifest_path
+----
+Full Path: tests/test_data/ladybird/0H/0M/0S/meta.json
 
-class TestPosition:
-    def test_from_valid_string(self):
-        pos = Position.from_string("0H/0M/3.8S/")
-        assert pos.hour == 0
-        assert pos.minute == 0
-        assert pytest.approx(pos.second, 0.001) == 3.8
-        
-    def test_from_invalid_string(self):
-        with pytest.raises(ValueError):
-            Position.from_string("invalid")
-            
-    def test_to_seconds(self):
-        pos = Position(hour=1, minute=30, second=15.5)
-        assert pytest.approx(pos.to_seconds(), 0.001) == 5415.5
-        
-    def test_to_string(self):
-        pos = Position(hour=0, minute=0, second=3.8)
-        assert pos.to_string() == "0H/0M/3.8S"
-
-class TestClipInfo:
-    @pytest.fixture
-    def sample_clip(self):
-        return ClipInfo(
-            name="CLIP1",
-            start_epoch=1723559258.022,
-            end_epoch=1723559268.022,  # 10 seconds duration
-            start_pos=Position(0, 0, 25.183),
-            end_pos=Position(0, 0, 35.183),
-            start_idx=1511,
-            end_idx=14273,
-            start_time=datetime(2024, 8, 13, 7, 27, 38, 22000)
-        )
-    
-    def test_duration(self, sample_clip):
-        assert pytest.approx(sample_clip.duration, 0.001) == 10.0
-        
-    def test_frame_count(self, sample_clip):
-        assert sample_clip.frame_count == 12762
-
-class TestManifestParser:
-    def test_parser_initialization(self, sample_manifest):
-        parser = ManifestParser(sample_manifest)
-        assert len(parser.get_clips()) == 2
-        
-    def test_nonexistent_manifest(self):
-        with pytest.raises(FileNotFoundError):
-            ManifestParser(Path("nonexistent.xml"))
-            
-    def test_get_clip(self, sample_manifest):
-        parser = ManifestParser(sample_manifest)
-        clip = parser.get_clip("CLIP1")
-        assert clip is not None
-        assert clip.name == "CLIP1"
-        assert pytest.approx(clip.start_epoch, 0.001) == 1723559258.022
-        
-    def test_clips_temporal_order(self, sample_manifest):
-        parser = ManifestParser(sample_manifest)
-        clips = parser.get_clips()
-        assert len(clips) == 2
-        assert clips[0].name == "CLIP2"  # Earlier timestamp
-        assert clips[1].name == "CLIP1"
-        
-    def test_find_clip_for_timestamp(self, sample_manifest):
-        parser = ManifestParser(sample_manifest)
-        clip = parser.find_clip_for_timestamp(1723559236.618)
-        assert clip is not None
-        assert clip.name == "CLIP2"
-        
-    def test_update_clip_status(self, sample_manifest):
-        parser = ManifestParser(sample_manifest)
-        parser.update_clip_status("CLIP1", ClipStatus.COMPLETE)
-        clip = parser.get_clip("CLIP1")
-        assert clip.status == ClipStatus.COMPLETE
-
-def test_find_manifest(tmp_path):
-    # Test single manifest
-    manifest_path = tmp_path / "test.xml"
-    manifest_path.write_text(SAMPLE_MANIFEST)
-    assert find_manifest(tmp_path) == manifest_path
-    
-    # Test no manifest
-    empty_dir = tmp_path / "empty"
-    empty_dir.mkdir()
-    assert find_manifest(empty_dir) is None
-    
-    # Test multiple manifests
-    another_manifest = tmp_path / "another.xml"
-    another_manifest.write_text(SAMPLE_MANIFEST)
-    with pytest.raises(ValueError):
-        find_manifest(tmp_path)
+{
+"Time":{"x0":1723559232.815, "xi-x0":[0,0.016,0.033,0.050,0.066,0.083,0.100,0.116,0.133,0.150,0.166,0.183,0.200,0.216,0.233,0.250,0.267,0.283,0.300,0.317,0.333,0.350,0.367,0.383,0.400,0.417,0.433,0.450,0.467,0.483,0.500,0.517,0.533,0.550,0.567,0.584,0.600,0.617,0.634,0.650,0.667,0.684,0.700,0.717,0.734,0.750,0.767,0.784,0.800,0.817,0.834,0.850,0.867,0.884,0.900,0.917,0.934,0.951,0.967,0.984]}
+}
 

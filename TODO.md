@@ -41,36 +41,15 @@
   - [x] Self-test command (`--self-test`)  
   - [x] Update checking (Git-based)  
   - [x] Job name support integrated in `cosmos.py` (Needs final CLI integration)  
-  - [x] Log file generation  
-  - [ ] Configuration persistence (basic load/save done, could be improved)  
-  - [ ] Multiple output format support (currently MP4 only)  
-  - [ ] Custom encoder settings (not yet implemented)  
-  - [ ] Resumable conversions (not implemented)  
-  - [ ] Batch processing mode (not necessary; tool already processes all detected clips)
+  - [x] Log file generation
 
-## Outstanding Work
+*Skipping below for now:*
+  - [-] Configuration persistence (basic load/save done, could be improved)  
+  - [-] Multiple output format support (currently MP4 only)  
+  - [-] Custom encoder settings (not yet implemented)  
+  - [-] Resumable conversions (not implemented)  
+  - [-] Batch processing mode (not necessary; tool already processes all detected clips)
 
-1. **Finalize Job Name CLI Integration**:
-   - [ ] Add `--job-name` argument in `cli.py`
-   - [ ] Prompt user for job name in interactive mode
-   - [ ] Pass job name to `cosmos.py` for `job_info.txt` generation
-
-2. **Remove Redundant Self-Test Reference in `cli.py`**:
-   - [ ] Remove `self_test()` calls from `cli.py` and rely solely on `--self-test` in `cosmos.py` that triggers `run_self_test()` in `preflight.py`.
-
-3. **Testing & QA**:
-   - [ ] Add a simple integration test that runs `cosmos.py --self-test` on a synthetic directory structure and checks output.
-   - [ ] Confirm that all tests pass on Windows, macOS, and Linux.
-   - [ ] Review code coverage and consider adding tests if coverage is low in certain modules.
-
-4. **Documentation & User Guides**:
-   - [ ] Update `README.md` if any new features are added (e.g., custom encoder settings).
-   - [ ] Create a quickstart guide (optional) if user feedback suggests it.
-
-5. **Code Review Action Items**:
-   - [ ] Confirm that all print statements and logging are consistent and user-friendly.
-   - [ ] Check for any leftover `print()` debugging statements that should be removed or replaced with logging.
-   - [ ] Consider adding command-line flags for low-memory mode and other performance tweaks.
 
 Once these tasks are complete, the codebase should be stable, tested, and ready for initial client deployment.
 

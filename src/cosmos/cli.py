@@ -1,10 +1,9 @@
 # File: src/cosmos/cli.py
 
 import argparse
-from pathlib import Path
 import sys
-import logging
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Dict, Any
 
 from .utils import (
     init_logging,
@@ -14,8 +13,7 @@ from .utils import (
     check_ffmpeg,
     print_info,
     print_warning,
-    print_error,
-    print_success
+    print_error
 )
 
 try:
@@ -38,7 +36,12 @@ def parse_args():
 
     return parser.parse_args()
 
-def run_interactive_mode(config: dict) -> dict:
+def run_interactive_mode(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run an interactive session to gather input_dir, output_dir, and other settings.
+    Uses questionary for cross-platform interactive prompts.
+    If questionary is not installed, print an error and exit.
+    """
     if questionary is None:
         print_error("Interactive mode requested but 'questionary' is not installed.")
         sys.exit(1)
@@ -51,18 +54,26 @@ def run_interactive_mode(config: dict) -> dict:
         default=str(config.get("input_dir", ""))
     ).ask()
 
+    if not input_dir:
+        print_error("No input directory specified.")
+        sys.exit(1)
+
     # Prompt for output directory
     output_dir = questionary.path(
         "Please select the output directory for processed files:",
         default=str(config.get("output_dir", ""))
     ).ask()
 
+    if not output_dir:
+        print_error("No output directory specified.")
+        sys.exit(1)
+
     # Confirm ffmpeg available
     if not check_ffmpeg():
         print_warning("FFmpeg not found. Please install it before proceeding.")
         cont = questionary.confirm("Do you want to continue anyway?", default=False).ask()
         if not cont:
-            print_info("Aborting due to missing FFmpeg.")
+            print_info("Aborted due to missing FFmpeg.")
             sys.exit(1)
 
     # Prompt for log level
@@ -98,14 +109,19 @@ def run_interactive_mode(config: dict) -> dict:
 
     return config
 
-def main():
+def run_cli() -> Dict[str, Any]:
+    """
+    Parse command-line arguments, handle interactive mode if requested,
+    load configuration files if provided, and return a final config dict
+    for use by cosmos.py.
+    """
     args = parse_args()
 
     # Load config if provided
     config_path = Path(args.config_file) if args.config_file else None
     config = load_config(config_path) if config_path else {}
 
-    # Command line args override config or fill in missing fields
+    # CLI args override config values
     if args.log_level:
         config["log_level"] = args.log_level
     if args.log_file:
@@ -119,11 +135,12 @@ def main():
     if args.job_name:
         config["job_name"] = args.job_name
 
-    # Initialize logging
+    # Initialize logging early so we can log further steps
     logfile = Path(config["log_file"]) if "log_file" in config else None
     logger = init_logging(level=config.get("log_level", "INFO"), logfile=logfile)
 
-    # Handle special commands first
+    # Handle special commands that do not require proceeding to processing
+    # (NOTE: Self-test is now handled in cosmos.py, not here)
     if args.check_updates:
         check_updates()
         sys.exit(0)
@@ -132,7 +149,7 @@ def main():
     if args.interactive:
         config = run_interactive_mode(config)
 
-    # Validate that we have required directories
+    # Validate directories are set
     if "input_dir" not in config or not config["input_dir"]:
         print_error("Input directory not specified. Use --input-dir or run in interactive mode.")
         sys.exit(1)
@@ -145,24 +162,13 @@ def main():
     if config_path:
         save_config(config_path, config)
 
-    # Return final config to be consumed by cosmos.py
+    logger.info("CLI argument resolution complete. Ready to proceed with processing pipeline.")
+    logger.info(f"Input Directory: {config['input_dir']}")
+    logger.info(f"Output Directory: {config['output_dir']}")
+    if "manifest" in config:
+        logger.info(f"Manifest: {config['manifest']}")
+
+    # Add self_test key so cosmos.py can check and handle it
     config["self_test"] = args.self_test
+
     return config
-
-if __name__ == "__main__":
-    main()
-
-    # From here we would:
-    # 1. Use manifest parser to find or load manifest.
-    # 2. Validate inputs using InputValidator.
-    # 3. Process clips using VideoProcessor.
-    #
-    # For now, we'll just log that we've completed CLI argument resolution.
-    # The next step would be calling into the main cosmos pipeline (e.g. from cosmos.py)
-    # This might look like:
-    # 
-    # from .manifest import find_manifest, ManifestParser
-    # from .validation import InputValidator
-    # from .processor import VideoProcessor, ProcessingOptions, ProcessingMode
-    #
-    # # ... load manifest, validate, process, etc.

@@ -4,6 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
+import logging
 
 
 class ClipStatus(Enum):
@@ -50,7 +51,10 @@ class Position:
     def to_seconds(self) -> float:
         """Convert position to total seconds from start of hour"""
         return self.hour * 3600 + self.minute * 60 + self.second
-
+    
+    def path_fragment(self) -> str:
+        """Return a directory path fragment like '0H/0M/25S'."""
+        return f"{self.hour}H/{self.minute}M/{self.second}S"
 
 @dataclass
 class ClipInfo:
@@ -59,6 +63,8 @@ class ClipInfo:
     
     Clips represent continuous recording sessions, each containing multiple
     video segments that should be processed together.
+    
+    # If adding configurable output fps, verify output fps is never greater than input fps
     """
     name: str                     # Clip identifier (e.g., "CLIP1")
     start_epoch: float           # Start timestamp (Unix epoch)
@@ -79,7 +85,13 @@ class ClipInfo:
     def frame_count(self) -> int:
         """Total number of frames in clip"""
         return self.end_idx - self.start_idx
-
+        
+    @property
+    def fps(self) -> int:
+        if self.duration <= 0:
+            raise ValueError(f"Clip {self.name} has no valid duration.")
+        raw_fps = self.frame_count / self.duration
+        return int(round(raw_fps))
 
 class ManifestParser:
     """
@@ -90,12 +102,13 @@ class ManifestParser:
     the directory structure.
     """
     
-    def __init__(self, manifest_path: Path):
+    def __init__(self, manifest_path: Path, logger: Optional[logging.Logger] = None):
         """
         Initialize parser with path to manifest XML.
         
         Args:
             manifest_path: Path to the manifest XML file
+            logger: Optional logger instance
             
         Raises:
             FileNotFoundError: If manifest file doesn't exist
@@ -103,6 +116,7 @@ class ManifestParser:
         """
         self.manifest_path = manifest_path
         self._clips: Dict[str, ClipInfo] = {}
+        self.logger = logger or logging.getLogger(__name__)
         
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest not found: {manifest_path}")
@@ -123,9 +137,15 @@ class ManifestParser:
         tree = ET.parse(self.manifest_path)
         root = tree.getroot()
         
+        self.logger.debug(f"Parsing manifest: {self.manifest_path}")
+        self.logger.debug(f"Found {len(root)} clip entries in manifest")
+        
         for elem in root:
             try:
                 name = elem.attrib['Name']
+                self.logger.debug(f"Parsing clip: {name}")
+                self.logger.debug(f"Raw attributes: {elem.attrib}")
+                
                 start_epoch = float(elem.attrib['Epoch'])
                 pos = Position.from_string(elem.attrib['Pos'])
                 start_idx = int(elem.attrib['InIdx'])
@@ -147,10 +167,25 @@ class ManifestParser:
                     start_time=start_time
                 )
                 
+                self.logger.debug(
+                    f"Parsed {name}: start_epoch={start_epoch}, "
+                    f"pos={pos.to_string()}, "
+                    f"frame_range={start_idx}-{end_idx}"
+                )
+                
             except (KeyError, ValueError) as e:
                 # Log warning but continue parsing other clips
-                print(f"Warning: Failed to parse clip element: {e}")
+                self.logger.warning(f"Warning: failed to parse clip element: {e}")
                 continue
+        
+        self.logger.info(f"Successfully parsed {len(self._clips)} clips from manifest")
+        for name, clip in self._clips.items():
+            self.logger.info(
+                f"Clip {name}: "
+                f"start={clip.start_time}, "
+                f"frames={clip.frame_count}, "
+                f"pos={clip.start_pos.to_string()}"
+            )
     
     def get_clip(self, name: str) -> Optional[ClipInfo]:
         """Get information for a specific clip by name"""

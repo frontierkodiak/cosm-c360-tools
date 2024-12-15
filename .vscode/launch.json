@@ -10,6 +10,19 @@
             "args": ["--input-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy", "--output-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out"]
         },
         {
+            "name": "Debug Cosmos",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "cosmos.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--input-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy",
+                "--output-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out/test1",
+                "--log-level", "DEBUG",
+                "--job-name", "test1"
+            ]
+        },
+        {
             "name": "Run Cosmos Self-Test",
             "type": "debugpy",
             "request": "launch",
