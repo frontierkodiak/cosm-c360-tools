@@ -3,6 +3,7 @@
 *Zone.Identifier
 
 test_data/
+*_export.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
