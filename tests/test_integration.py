@@ -17,4 +17,3 @@ def test_self_test_integration():
     result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode == 0, f"Self-test failed with non-zero exit code: {result.returncode}\nSTDERR: {result.stderr}"
     assert "Self-test passed. System ready." in result.stdout, f"Expected success message not in output.\nSTDOUT: {result.stdout}"
-\
