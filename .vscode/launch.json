@@ -17,9 +17,9 @@
             "console": "integratedTerminal",
             "args": [
                 "--input-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy",
-                "--output-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out/test1",
+                "--output-dir", "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out/test2",
                 "--log-level", "DEBUG",
-                "--job-name", "test1"
+                "--job-name", "test2"
             ]
         },
         {

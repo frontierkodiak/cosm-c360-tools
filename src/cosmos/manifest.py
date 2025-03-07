@@ -2,24 +2,24 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import xml.etree.ElementTree as ET
 import logging
 
 
 class ClipStatus(Enum):
     """Status of a clip's data availability"""
-    COMPLETE = "complete"          # All expected segments present
-    PARTIAL = "partial"           # Some segments missing
-    MISSING = "missing"           # No segments found
-    INVALID = "invalid"           # Metadata inconsistency detected
+    COMPLETE = "complete"    # All expected segments present
+    PARTIAL = "partial"      # Some segments missing
+    MISSING = "missing"      # No segments found
+    INVALID = "invalid"      # Metadata inconsistency detected
 
 
 @dataclass
 class Position:
     """
     Represents a position in the COSM directory structure.
-    
+
     Format is typically "NH/MM/SS.sss" where:
     - N: Hour number
     - MM: Minute number
@@ -56,29 +56,30 @@ class Position:
         """Return a directory path fragment like '0H/0M/25S'."""
         return f"{self.hour}H/{self.minute}M/{self.second}S"
 
+
 @dataclass
 class ClipInfo:
     """
     Information about a single clip from the manifest.
-    
+
     Clips represent continuous recording sessions, each containing multiple
     video segments that should be processed together.
-    
-    # If adding configurable output fps, verify output fps is never greater than input fps
     """
     name: str                     # Clip identifier (e.g., "CLIP1")
-    start_epoch: float           # Start timestamp (Unix epoch)
-    end_epoch: float             # End timestamp (Unix epoch)
-    start_pos: Position          # Starting directory position
-    end_pos: Position            # Ending directory position
-    start_idx: int              # Starting frame index
-    end_idx: int                # Ending frame index
-    start_time: datetime        # Human-readable start time
+    start_epoch: float            # Start timestamp (Unix epoch)
+    end_epoch: float              # End timestamp (Unix epoch) - may be None initially
+    start_pos: Position           # Starting directory position
+    end_pos: Position             # Ending directory position
+    start_idx: int                # Starting frame index
+    end_idx: int                  # Ending frame index
+    start_time: datetime          # Human-readable start time
     status: ClipStatus = ClipStatus.MISSING
 
     @property
     def duration(self) -> float:
         """Duration of clip in seconds"""
+        if self.end_epoch is None:
+            return 0.0
         return self.end_epoch - self.start_epoch
 
     @property
@@ -88,15 +89,16 @@ class ClipInfo:
         
     @property
     def fps(self) -> int:
-        if self.duration <= 0:
-            raise ValueError(f"Clip {self.name} has no valid duration.")
+        if self.end_epoch is None or self.duration <= 0:
+            raise ValueError(f"Clip {self.name} has no valid duration. Cannot compute FPS.")
         raw_fps = self.frame_count / self.duration
         return int(round(raw_fps))
+
 
 class ManifestParser:
     """
     Parser for COSM C360 camera clip manifests.
-    
+
     The manifest XML contains information about recording sessions ("clips"),
     including their temporal boundaries, frame indices, and positions within
     the directory structure.
@@ -126,7 +128,7 @@ class ManifestParser:
     def _parse_manifest(self) -> None:
         """
         Parse the manifest XML file and extract clip information.
-        
+
         The manifest contains a series of clip entries with attributes:
         - Name: Clip identifier
         - Epoch: Start time in Unix epoch format
@@ -155,13 +157,13 @@ class ManifestParser:
                     "%H:%M:%S.%f %m/%d/%Y"
                 )
                 
-                # Store clip info
+                # We don't have end_epoch or end_pos yet
                 self._clips[name] = ClipInfo(
                     name=name,
                     start_epoch=start_epoch,
-                    end_epoch=None,  # Will be determined from segment data
+                    end_epoch=None, 
                     start_pos=pos,
-                    end_pos=None,    # Will be determined from segment data
+                    end_pos=None,
                     start_idx=start_idx,
                     end_idx=end_idx,
                     start_time=start_time

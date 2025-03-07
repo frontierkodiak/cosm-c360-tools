@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional
 import json
 import shutil
 import subprocess
@@ -12,9 +12,9 @@ from .manifest import ClipInfo, ClipStatus, Position, ManifestParser
 
 class ValidationLevel(Enum):
     """Severity level for validation issues"""
-    ERROR = "error"          # Fatal issue, cannot proceed
-    WARNING = "warning"      # Potential issue, can proceed with caution
-    INFO = "info"            # Informational note
+    ERROR = "error"           # Fatal issue, cannot proceed
+    WARNING = "warning"       # Potential issue, can proceed with caution
+    INFO = "info"             # Informational note
 
 @dataclass
 class ValidationIssue:
@@ -43,13 +43,9 @@ class SegmentInfo:
         return len(self.frame_timestamps)
     
     @property
-    def has_all_files(self) -> bool:
-        """Check if all expected .ts files are present"""
-        # Note: This check is no longer strictly 1:1 files to frames,
-        # because each .ts file can contain multiple frames.
-        # If desired, we can remove or adjust this method.
-        return True  # For now, we always consider that we have all files. 
-                     # Validation is handled by the increments vs expected_frames check.
+    def duration(self) -> float:
+        """Approximate duration based on ts_files count (each ts represents 0.1s)"""
+        return len(self.ts_files) * 0.1
 
 @dataclass
 class ClipValidationResult:
@@ -144,21 +140,18 @@ class InputValidator:
             
         return issues
     
-    def validate_segment(self, 
-                         segment_dir: Path,
-                         clip_fps: int) -> Optional[SegmentInfo]:
+    def load_segment(self, segment_dir: Path) -> Optional[SegmentInfo]:
         """
-        Validate a segment directory and its meta.json using the clip-level FPS.
+        Load a segment directory and its meta.json without FPS checks yet.
         
         Args:
             segment_dir: Path to segment directory
-            clip_fps: Frames per second derived from the entire clip
             
         Returns:
             SegmentInfo if valid, None if invalid
         """
         meta_path = segment_dir / "meta.json"
-        self.logger.debug(f"Validating segment at {segment_dir}")
+        self.logger.debug(f"Loading segment at {segment_dir}")
         
         if not meta_path.is_file():
             self.logger.debug(f"No meta.json found in {segment_dir}")
@@ -180,29 +173,12 @@ class InputValidator:
             ts_files = sorted(segment_dir.glob("*.ts"))
             self.logger.debug(f"Found {len(ts_files)} .ts files in {segment_dir}")
             
-            # Derive segment duration:
-            # Each ts file covers approximately 0.1s of real time.
-            # So, segment_duration_s = number_of_ts_files * 0.1s
-            segment_duration_s = len(ts_files) * 0.1
-            
-            # Expected frames in this segment based on clip_fps and segment duration
-            expected_frames = int(round(clip_fps * segment_duration_s))
-            
-            # Check if increments match the expected frame count
-            if len(increments) != expected_frames:
-                self.logger.warning(
-                    f"Mismatch in {segment_dir}: expected {expected_frames} frames "
-                    f"(FPS={clip_fps}, duration={segment_duration_s:.1f}s) but got {len(increments)}."
-                )
-                return None
-            
             # Create timestamps for each frame
             timestamps = [start_time + inc for inc in increments]
             
             self.logger.debug(
-                f"Segment validation successful: start_time={start_time}, "
-                f"frame_count={len(timestamps)}, file_count={len(ts_files)}, "
-                f"expected_frames={expected_frames}"
+                f"Segment loaded: start_time={start_time}, "
+                f"frame_count={len(timestamps)}, file_count={len(ts_files)}"
             )
             
             return SegmentInfo(
@@ -217,7 +193,7 @@ class InputValidator:
             return None
     
     def validate_clip(self, clip: ClipInfo) -> ClipValidationResult:
-        """Validate all segments for a clip"""
+        """Validate all segments for a clip, delaying FPS checks until after end_epoch is known."""
         issues = []
         segments = []
         missing_positions = []
@@ -228,23 +204,6 @@ class InputValidator:
             f"start={clip.start_pos.to_string()}, "
             f"frames={clip.start_idx}-{clip.end_idx}"
         )
-
-        # Derive FPS from the clip
-        try:
-            clip_fps = clip.fps
-        except ValueError as e:
-            issues.append(ValidationIssue(
-                level=ValidationLevel.ERROR,
-                message=f"Cannot determine FPS for clip {clip.name}: {e}"
-            ))
-            # If we can't determine FPS, no point checking segments further
-            return ClipValidationResult(
-                clip=clip,
-                segments=[],
-                missing_segments=[],
-                issues=issues,
-                estimated_size=0
-            )
 
         start_sec = int(clip.start_pos.second)
         end_sec = int(clip.end_pos.second) if clip.end_pos else start_sec + 60
@@ -268,9 +227,9 @@ class InputValidator:
                 missing_positions.append(pos)
                 continue
 
-            if segment_info := self.validate_segment(segment_dir, clip_fps):
+            if segment_info := self.load_segment(segment_dir):
                 self.logger.debug(
-                    f"Valid segment found: {len(segment_info.ts_files)} files, "
+                    f"Segment loaded: {len(segment_info.ts_files)} files, "
                     f"{len(segment_info.frame_timestamps)} frames"
                 )
                 segments.append(segment_info)
@@ -280,8 +239,15 @@ class InputValidator:
                 issues.append(ValidationIssue(
                     level=ValidationLevel.WARNING,
                     message=f"Invalid segment at {pos.path_fragment()}",
-                    context="Missing or corrupt meta.json or frame mismatch"
+                    context="Missing or corrupt meta.json"
                 ))
+
+        # If we have segments, we can determine the end_epoch from the last segment
+        if segments:
+            # Update clip end based on last segment
+            clip.end_epoch = segments[-1].end_time
+            if last_success_pos:
+                clip.end_pos = last_success_pos
 
         # Report segment coverage
         found_segments = len(segments)
@@ -300,14 +266,31 @@ class InputValidator:
                     f"time range: {segment.start_time:.3f}-{segment.end_time:.3f}"
                 )
 
+        # Now that we potentially have end_epoch, we can compute FPS and verify increments
+        if segments and clip.end_epoch is not None:
+            try:
+                clip_fps = clip.fps
+                # Verify each segment against the derived FPS
+                for seg in segments:
+                    segment_duration_s = seg.duration
+                    expected_frames = int(round(clip_fps * segment_duration_s))
+                    if seg.frame_count != expected_frames:
+                        issues.append(ValidationIssue(
+                            level=ValidationLevel.WARNING,
+                            message=(
+                                f"Mismatch in {seg.directory}: expected {expected_frames} frames "
+                                f"(FPS={clip_fps}, duration={segment_duration_s:.1f}s) but got {seg.frame_count}."
+                            )
+                        ))
+            except ValueError as e:
+                # Cannot determine FPS for some reason
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.ERROR,
+                    message=f"Cannot determine FPS for clip {clip.name}: {e}"
+                ))
+
         # Estimate output size (very rough)
         estimated_size = len(segments) * 100 * 1024 * 1024
-
-        # Update clip end info if we have segments
-        if segments:
-            clip.end_epoch = segments[-1].end_time
-            if last_success_pos:
-                clip.end_pos = last_success_pos
 
         return ClipValidationResult(
             clip=clip,
