@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from datetime import datetime
 
-from cosmos.validation import (
+from src.cosmos.validation import (
     InputValidator,
     ValidationLevel,
     ValidationIssue,
@@ -14,7 +14,7 @@ from cosmos.validation import (
     ClipValidationResult,
     ValidationResult
 )
-from cosmos.manifest import Position, ClipInfo, ManifestParser
+from src.cosmos.manifest import Position, ClipInfo, ManifestParser
 
 # Test fixtures
 @pytest.fixture

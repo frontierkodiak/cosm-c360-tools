@@ -5,15 +5,15 @@ import pytest
 import subprocess
 from unittest.mock import Mock, patch
 
-from cosmos.processor import (
+from src.cosmos.processor import (
     ProcessingMode,
     ProcessingOptions,
     EncoderType,
     ProcessingResult,
     VideoProcessor
 )
-from cosmos.validation import ClipValidationResult, SegmentInfo
-from cosmos.manifest import ClipInfo, Position
+from src.cosmos.validation import ClipValidationResult, SegmentInfo
+from src.cosmos.manifest import ClipInfo, Position
 
 # Test fixtures
 @pytest.fixture

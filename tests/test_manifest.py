@@ -2,7 +2,7 @@
 from pathlib import Path
 import pytest
 from datetime import datetime
-from cosmos.manifest import (
+from src.cosmos.manifest import (
     Position, 
     ClipInfo, 
     ClipStatus, 
