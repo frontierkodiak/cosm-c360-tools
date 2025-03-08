@@ -1,0 +1,15 @@
+{
+  "log_level": "DEBUG",
+  "job_name": "default_job",
+  "input_dir": "/datasets/dataZoo/clients/ladybird/batch_0/raw",
+  "output_dir": "/datasets/dataZoo/clients/ladybird/batch_0/cosmos",
+  "output_resolution": {
+    "width": 1280,
+    "height": 720
+  },
+  "quality_mode": "balanced",
+  "low_memory": false,
+  "crf": null,
+  "config_name": "720p_ladybird",
+  "config_description": "balanced quality"
+}

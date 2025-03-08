@@ -5,7 +5,6 @@ from typing import Dict, List, Optional
 import json
 import shutil
 import subprocess
-from datetime import datetime
 import logging
 
 from .manifest import ClipInfo, ClipStatus, Position, ManifestParser

@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import subprocess
 import tempfile
-from datetime import datetime
 import logging
 
 from .validation import ClipValidationResult, SegmentInfo
