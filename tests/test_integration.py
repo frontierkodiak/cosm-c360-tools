@@ -4,8 +4,8 @@ import subprocess
 import sys
 
 def test_self_test_integration():
-    input_dir = "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/failed_copy"
-    output_dir = "/datasets/dataZoo/clients/ladybird_data/LADYBIRD/cosmos_out"
+    input_dir = "/datasets/dataZoo/clients/ladybird/batch_0/raw"
+    output_dir = "/datasets/dataZoo/clients/ladybird/batch_0/cosmos"
 
     cmd = [
         sys.executable, "cosmos.py",

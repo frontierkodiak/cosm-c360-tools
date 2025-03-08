@@ -30,8 +30,35 @@ def init_logging(level: str = "INFO", logfile: Optional[Path] = None) -> logging
 
     return logger
 
+def get_configs_dir() -> Path:
+    """Get the path to the configs directory."""
+    return Path(__file__).parent.parent.parent / "configs"
+
+def create_configs_dir() -> None:
+    """Create the configs directory if it doesn't exist."""
+    configs_dir = get_configs_dir()
+    configs_dir.mkdir(exist_ok=True)
+
+def list_configs() -> Dict[str, Path]:
+    """List available configurations in the configs directory."""
+    configs_dir = get_configs_dir()
+    create_configs_dir()
+    
+    configs = {}
+    for config_file in configs_dir.glob("*.json"):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+                name = config_data.get("config_name", config_file.stem)
+                configs[name] = config_file
+        except (json.JSONDecodeError, OSError):
+            # Skip invalid config files
+            continue
+    
+    return configs
+
 def load_config(config_path: Path) -> Dict[str, Any]:
-    if config_path.is_file():
+    if config_path and config_path.is_file():
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
