@@ -115,7 +115,9 @@ class VideoProcessor:
         crf = self.options.crf or {
             ProcessingMode.QUALITY: 18,
             ProcessingMode.BALANCED: 23,
-            ProcessingMode.PERFORMANCE: 28
+            ProcessingMode.PERFORMANCE: 28,
+            ProcessingMode.LOW_MEMORY: 23,  # Same as BALANCED
+            ProcessingMode.MINIMAL: 28      # Same as PERFORMANCE
         }[self.options.quality_mode]
         
         # Start with encoder-specific settings
