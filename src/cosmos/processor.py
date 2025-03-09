@@ -186,14 +186,27 @@ class VideoProcessor:
             output_path = self.output_dir / f"{clip_result.clip.name}.mp4"
             concat_file = self._create_concat_file(clip_result.segments)
             
-            # Determine thread count for software encoding
-            if self.options.low_memory:
-                import multiprocessing
-                total_threads = multiprocessing.cpu_count()
-                # Use half threads in low memory mode
+            # Determine thread count based on quality mode and low memory setting
+            import multiprocessing
+            total_threads = multiprocessing.cpu_count()
+            
+            # Set thread count based on quality mode and low memory flag
+            if self.options.quality_mode == ProcessingMode.MINIMAL:
+                # Minimal mode - always use single thread for max memory savings
+                thread_count = 1
+                self.logger.info("Using single thread processing (minimal mode)")
+            elif self.options.low_memory:
+                # Low memory mode - use half available threads
                 thread_count = max(1, total_threads // 2)
+                self.logger.info(f"Using reduced thread count: {thread_count} (low memory mode)")
+            elif self.options.quality_mode == ProcessingMode.LOW_MEMORY:
+                # Low memory quality mode - use half available threads
+                thread_count = max(1, total_threads // 2)
+                self.logger.info(f"Using reduced thread count: {thread_count} (low memory quality mode)")
             else:
+                # Normal modes - no thread restrictions
                 thread_count = None
+                self.logger.info(f"Using all available threads")
                 
             self.logger.debug(f"Processing clip {clip_result.clip.name}")
             self.logger.debug(f"Created concat file at {concat_file}")
@@ -206,6 +219,17 @@ class VideoProcessor:
             success = False
             error_messages = []
             
+            # Add memory-saving FFmpeg options based on quality mode
+            memory_opts = []
+            if self.options.low_memory or self.options.quality_mode in [ProcessingMode.LOW_MEMORY, ProcessingMode.MINIMAL]:
+                # Add options to reduce memory usage
+                memory_opts = [
+                    "-max_muxing_queue_size", "1024",  # Reduce muxing queue size
+                    "-tile-columns", "0",              # Disable tiling to save memory
+                    "-frame-parallel", "0"             # Disable parallel frame processing
+                ]
+                self.logger.info("Added memory-saving FFmpeg options")
+            
             for encoder in self._available_encoders:
                 try:
                     # Build base command
@@ -213,38 +237,51 @@ class VideoProcessor:
                         "ffmpeg", "-y",
                         "-f", "concat",
                         "-safe", "0",
-                        "-i", str(concat_file),
-                        "-filter_complex", self._build_filter_complex()
+                        "-i", str(concat_file)
                     ]
                     
-                    # Add encoder settings with thread control for software encoding
+                    # Add memory-saving options if enabled
+                    if memory_opts:
+                        cmd.extend(memory_opts)
+                        
+                    # Add filter complex
+                    cmd.extend(["-filter_complex", self._build_filter_complex()])
+                    
+                    # Add encoder settings with thread control
                     use_threads = thread_count if (
                         encoder == EncoderType.SOFTWARE_X264 and 
-                        self.options.low_memory
+                        (self.options.low_memory or 
+                         self.options.quality_mode in [ProcessingMode.LOW_MEMORY, ProcessingMode.MINIMAL])
                     ) else None
                     
                     cmd.extend(self._get_encoder_settings(encoder, use_threads))
                     cmd.append(str(output_path))
                     
-                    # Run ffmpeg with proper subprocess configuration for Windows
+                    # Run ffmpeg with proper subprocess configuration for platform
                     self.logger.info(f"Processing {clip_result.clip.name} with {encoder.value}")
                     # Log the complete ffmpeg command
                     self.logger.debug(f"Executing ffmpeg command:\n{' '.join(cmd)}")
-                    subprocess.run(
+                    
+                    # Create subprocess with platform-specific settings
+                    creation_flags = 0
+                    if os.name == 'nt':  # Windows
+                        creation_flags = subprocess.CREATE_NO_WINDOW
+                    
+                    result = subprocess.run(
                         cmd,
                         check=True,
                         capture_output=True,
                         text=True,
                         encoding='utf-8',
                         errors='replace',
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                        creationflags=creation_flags
                     )
                     
-                    # # Log ffmpeg output
-                    # if result.stdout:
-                    #     self.logger.debug(f"FFmpeg stdout:\n{result.stdout}")
-                    # if result.stderr:
-                    #     self.logger.debug(f"FFmpeg stderr:\n{result.stderr}")
+                    # Log command output at debug level
+                    if result.stdout.strip():
+                        self.logger.debug(f"FFmpeg stdout:\n{result.stdout.strip()}")
+                    if result.stderr.strip():
+                        self.logger.debug(f"FFmpeg stderr:\n{result.stderr.strip()}")
                     
                     success = True
                     break
@@ -253,6 +290,14 @@ class VideoProcessor:
                     error_msg = f"{encoder.value}: {e}"
                     self.logger.error(f"Encoder failed: {error_msg}")
                     error_messages.append(error_msg)
+                    
+                    # If we're in low memory mode and this is not the last encoder, try to free memory
+                    if (self.options.low_memory or 
+                        self.options.quality_mode in [ProcessingMode.LOW_MEMORY, ProcessingMode.MINIMAL]):
+                        self.logger.info("Attempting to free memory before trying next encoder...")
+                        import gc
+                        gc.collect()  # Explicit garbage collection
+                    
                     continue
                 
             if not success:
@@ -263,6 +308,18 @@ class VideoProcessor:
             # Calculate processing statistics
             duration = clip_result.clip.duration
             frames = sum(seg.frame_count for seg in clip_result.segments)
+            
+            # Add platform-specific optimizations for output file
+            if output_path.exists():
+                # Attempt to minimize disk cache usage on Windows
+                if os.name == 'nt':
+                    try:
+                        with open(str(output_path), 'rb+') as f:
+                            # FILE_FLAG_NO_BUFFERING equivalent in Python
+                            # This is a Windows-specific optimization
+                            os.fsync(f.fileno())
+                    except Exception as e:
+                        self.logger.debug(f"Non-critical error optimizing file cache: {e}")
             
             return ProcessingResult(
                 clip=clip_result.clip,
@@ -285,5 +342,15 @@ class VideoProcessor:
             
         finally:
             # Cleanup
-            if 'concat_file' in locals():
-                concat_file.unlink()
+            if 'concat_file' in locals() and concat_file.exists():
+                try:
+                    concat_file.unlink()
+                    self.logger.debug("Cleaned up temporary concat file")
+                except Exception as e:
+                    self.logger.debug(f"Failed to clean up concat file: {e}")
+                    
+            # Force garbage collection to free memory
+            if self.options.low_memory or self.options.quality_mode in [ProcessingMode.LOW_MEMORY, ProcessingMode.MINIMAL]:
+                import gc
+                gc.collect()
+                self.logger.debug("Forced garbage collection after processing")

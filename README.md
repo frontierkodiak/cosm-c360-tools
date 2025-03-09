@@ -1,169 +1,117 @@
 # COSM C360 Tools
 
-**COSM C360 Tools** (referred to as `cosmos`) is a command-line utility for converting specialized video output from COSM C360 cameras into standard MP4 video files suitable for review and downstream analysis. It handles the complex tiled HEVC output and merges multiple streams into a standard video format.
+**COSM C360 Tools** is a user-friendly utility that converts specialized video output from COSM C360 cameras into standard MP4 files for easy viewing and analysis. No video editing experience required!
 
-## Key Features
+## 📋 Quick Start Guide for First-Time Users
 
-- **Manifest Parsing & Validation**: Automatically finds and parses the camera's XML manifest file, identifying clips and verifying temporal continuity.
-- **Segment Analysis**: Gathers `.ts` segments and their corresponding `meta.json` files, ensuring integrity and completeness.
-- **Video Assembly**: Extracts and aligns four HEVC tile streams, handles overlapping regions, and assembles frames into a full-resolution video.
-- **Multi-Resolution Output**: Outputs a full-resolution master file and can generate downscaled variants (e.g., 4K, 1080p).
-- **Cross-Platform & Hardware Acceleration**: Works on Linux, macOS, and Windows. Automatically attempts hardware-accelerated encoding (NVENC, AMF, QSV) and falls back to software (x264).
-- **Pre-Flight Checks**: Built-in `--self-test` mode checks system requirements (FFmpeg, disk space, memory) and input directory structure before processing.
-- **Interactive & Non-Interactive Modes**: Fully scriptable via CLI flags, or run interactively with guided prompts for non-technical users.
-- **Update Checking**: Checks for updates if `git` is available.
+Our interactive mode will guide you through the entire process with simple prompts and explanations.
 
-## System Requirements
+### For Windows Users:
 
-- **Operating System**: Linux, macOS, or Windows.
-- **Python**: 3.10 or higher recommended.
-- **FFmpeg**: Must be installed and accessible in `PATH`.
-- **Memory**: At least 8GB RAM recommended (less may cause slowdowns, consider `--low-memory` mode).
-- **Disk Space**: At least 10GB free disk space recommended.
-- **Git (Optional)**: To automatically check for updates when running `--check-updates`.
+1. **Download the tool**: Download the latest release from our [GitHub Releases page](https://github.com/frontierkodiak/cosm-c360-tools/releases)
+   - Download and extract the ZIP file to a folder of your choice
 
-## Input Directory Structure
+2. **Install prerequisites**:
+   - [Download and install Python 3.10+](https://www.python.org/downloads/) (Make sure to check "Add Python to PATH" during installation)
+   - [Download and install FFmpeg](https://ffmpeg.org/download.html) (Detailed instructions in the [User Guide](docs/USER_GUIDE.md#step-2-install-ffmpeg))
 
-The input directory should follow a hierarchical structure reflecting the camera output:
+3. **Open Command Prompt**: 
+   - Press `Win+R`, type `cmd`, and press Enter
+   - Use `cd` to navigate to where you extracted the tool:
+     ```
+     cd C:\path\to\cosm-c360-tools
+     ```
 
-```
-input_dir/
- ├── 0H/
- │   ├── 0M/
- │   │   ├── 0S/
- │   │   │   ├── meta.json
- │   │   │   ├── <segment .ts files>
- │   │   ├── 1S/
- │   │   │   ├── meta.json
- │   │   │   ├── <segment .ts files>
- │   │   └── ...
- │   └── 1M/
- │       ├── 0S/
- │       │   ├── meta.json
- │       │   ├── <segment .ts files>
- │       └── ...
- ├── MyManifest.xml
- └── AnotherManifest.xml (if multiple manifests exist)
-```
+4. **Install dependencies and run**:
+   ```
+   pip install -r requirements.txt
+   python cosmos.py --interactive
+   ```
 
-- Each second-level directory (`XH/XM/XS`) must contain a `meta.json` file and `.ts` files.
-- The top-level directory should contain a single `.xml` manifest file. If multiple `.xml` files are present, you must specify which one to use via `--manifest`.
+### For macOS/Linux Users:
 
-## Installation
+1. **Install prerequisites**:
+   ```bash
+   # macOS (using Homebrew)
+   brew install python ffmpeg
 
-We recommend using [UV](https://github.com/astral-sh/uv?tab=readme-ov-file) for environment management.
+   # Ubuntu/Debian Linux
+   sudo apt update
+   sudo apt install python3 python3-pip ffmpeg
+   ```
 
-### Using UV (Recommended)
+2. **Download and run**:
+   ```bash
+   # Get the tool
+   curl -L https://github.com/frontierkodiak/cosm-c360-tools/archive/refs/heads/main.zip -o cosm-c360-tools.zip
+   unzip cosm-c360-tools.zip
+   cd cosm-c360-tools-main
 
-**macOS / Linux**:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv new cosmos-env
-uv activate cosmos-env
-pip install -r requirements.txt
-```
+   # Install dependencies and run
+   pip install -r requirements.txt
+   python cosmos.py --interactive
+   ```
 
-**Windows (PowerShell)**:
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-uv new cosmos-env
-uv activate cosmos-env
-pip install -r requirements.txt
-```
+## 💻 For Users with Limited System Resources
 
-If not using UV, you can still use Python's built-in `venv`:
-```bash
-# On macOS/Linux:
-python3 -m venv venv
-source venv/bin/activate
+If you're working with high-resolution footage (8K+) on a computer with limited RAM (16GB or less), we recommend these settings:
 
-# On Windows:
-python -m venv venv
-venv\Scripts\activate
+1. When using interactive mode, select the **"low_memory"** or **"minimal"** quality mode
+2. Enable the **"Low memory mode"** option when prompted
+3. Consider processing to a lower output resolution (like 1080p) first to verify results
 
-pip install -r requirements.txt
-```
+These settings will use a single processing thread which dramatically reduces memory usage but increases processing time.
 
-Confirm `ffmpeg` is installed and in your PATH:
-```bash
-ffmpeg -version
-```
+## 🎥 What This Tool Does
 
-If `ffmpeg` is not found, please install it according to your platform's instructions.
+- **Converts Specialized Camera Output**: Transforms tiled HEVC camera footage into standard MP4 files that you can play in any video player
+- **Automatic Processing**: Handles complex tasks like parsing manifest files, validating footage segments, and assembling the final video
+- **Multiple Resolution Options**: Create videos in various resolutions from 720p to full 8K+
+- **Works Everywhere**: Compatible with Windows, macOS, and Linux
 
-## Usage
+## 📚 Complete Documentation
 
-### Non-Interactive Mode
+- [User Guide](docs/USER_GUIDE.md) - Detailed installation and usage instructions for all platforms
+- [Command Reference](docs/COMMAND_REFERENCE.md) - All available commands and options
+- [Input Structure](docs/INPUT_STRUCTURE.md) - Details about the expected directory structure for camera footage
 
-Run `cosmos.py` directly or via `python`:
+## ⚙️ Quality and Performance Settings
 
-```bash
-python cosmos.py --input-dir /path/to/input --output-dir /path/to/output
-```
+COSM C360 Tools offers several processing modes to balance quality, speed, and resource usage:
 
-If multiple `.xml` manifests exist, specify which one:
-```bash
-python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --manifest /path/to/manifest.xml
-```
+| Mode | Quality | Speed | Memory Usage | Recommended For |
+|------|---------|-------|--------------|----------------|
+| quality | Highest | Slowest | High | High-end systems, final outputs |
+| balanced | Good | Medium | Medium | Most systems (default) |
+| performance | Lower | Fast | Medium | Quick previews |
+| low_memory | Good | Slow | Low | Systems with 8-16GB RAM |
+| minimal | Lower | Slowest | Lowest | Systems with <8GB RAM |
 
-Run a system self-test before processing:
-```bash
-python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --self-test
-```
+## 🧰 Powerful Configuration System
 
-Check for updates:
-```bash
-python cosmos.py --check-updates
-```
+Save your preferred settings for future use:
+- **Save your configuration**: The tool will offer to save your settings automatically
+- **Reload saved settings**: Quickly pick up where you left off
+- **Override any option**: Fine-tune specific settings as needed
 
-Specify a job name (useful for logs and output notes):
-```bash
-python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --job-name MyJobName
-```
+## 🖥️ System Requirements
 
-Adjust logging:
-```bash
-python cosmos.py --input-dir /path/to/input --output-dir /path/to/output --log-level DEBUG --log-file mylog.log
-```
+- **Python**: 3.10 or higher
+- **FFmpeg**: Required (installation instructions in the [User Guide](docs/USER_GUIDE.md))
+- **Disk Space**: 10GB+ free space recommended (more for high-resolution output)
+- **Memory**: 
+  - 16GB+ RAM recommended for high-resolution processing
+  - 8GB RAM workable with low_memory mode
+  - 4GB RAM usable with minimal mode (very slow)
 
-### Interactive Mode
+## 🔍 Getting Help
 
-If you're unsure about the input directory or other parameters, run:
-```bash
-python cosmos.py --interactive
-```
+If you encounter any issues:
+1. Run the self-test: `python cosmos.py --self-test`
+2. Enable detailed logging: `python cosmos.py --log-level DEBUG`
+3. Check our [User Guide](docs/USER_GUIDE.md#troubleshooting) for common solutions
+4. Email support at [caleb@polli.ai](mailto:caleb@polli.ai)
 
-The tool will guide you through selecting the input directory, output directory, and other settings interactively. After confirming, it will proceed with processing.
+## 📜 License
 
-### Example Commands (All Platforms)
-
-**Windows (PowerShell)**:
-```powershell
-python .\cosmos.py --input-dir C:\data\cosm_input --output-dir C:\data\cosm_output --self-test
-```
-
-**macOS / Linux (Bash)**:
-```bash
-python cosmos.py --input-dir ~/cosm_input --output-dir ~/cosm_output --interactive
-```
-
-## Running Tests
-
-Tests are included to ensure code quality and correctness:
-
-```bash
-pytest tests
-```
-
-Ensure `pytest` is installed:
-```bash
-pip install pytest
-```
-
-This runs the test suite (unit tests for validation, processing, manifest parsing, and integration tests). Use `TESTING.md` for more detailed testing instructions.
-
-## Additional Notes
-
-- Output files, including `job_info.txt`, are placed in the specified `output` directory.
-- If system resources are limited, consider `--low-memory` mode (to be added) or reducing resolution.
-- If you wish to contribute or request features, please open an issue or a pull request.
+[MIT License](LICENSE)
