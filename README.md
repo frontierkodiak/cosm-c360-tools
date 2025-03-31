@@ -8,29 +8,43 @@ Our interactive mode will guide you through the entire process with simple promp
 
 ### For Windows Users:
 
-1. **Download the tool**: Download the latest release from our [GitHub Releases page](https://github.com/frontierkodiak/cosm-c360-tools/releases)
-   - Download and extract the ZIP file to a folder of your choice
+1. **Clone the tool repository using GitHub Desktop**  
+   - If you haven't already installed GitHub Desktop, download and install it from [GitHub Desktop](https://desktop.github.com/).  
+   - Open GitHub Desktop, then select **File > Clone Repository**.  
+   - Enter the repository URL: `https://github.com/frontierkodiak/cosm-c360-tools.git` and choose a local folder to clone the repository.
 
 2. **Install prerequisites**:
-   - [Download and install Python 3.10+](https://www.python.org/downloads/) (Make sure to check "Add Python to PATH" during installation)
-   - [Download and install FFmpeg](https://ffmpeg.org/download.html) (Detailed instructions in the [User Guide](docs/USER_GUIDE.md#step-2-install-ffmpeg))
+   - [Download and install Python 3.10+](https://www.python.org/downloads/)  
+     (Make sure to check "Add Python to PATH" during installation)
+   - [Download and install FFmpeg](https://ffmpeg.org/download.html)  
+     (Detailed instructions in the [User Guide](docs/USER_GUIDE.md#step-2-install-ffmpeg))
 
-3. **Open Command Prompt**: 
-   - Press `Win+R`, type `cmd`, and press Enter
-   - Use `cd` to navigate to where you extracted the tool:
-     ```
+3. **Open Command Prompt**:  
+   - Press `Win+R`, type `cmd`, and press Enter  
+   - Use `cd` to navigate to the directory where you cloned the repository:
+     ```cmd
      cd C:\path\to\cosm-c360-tools
      ```
 
 4. **Install dependencies and run**:
-   ```
+   ```cmd
    pip install -r requirements.txt
    python cosmos.py --interactive
    ```
 
 ### For macOS/Linux Users:
 
-1. **Install prerequisites**:
+1. **Clone the tool repository**:
+   - **macOS**:  
+     If you haven't already installed GitHub Desktop, download and install it from [GitHub Desktop](https://desktop.github.com/).  
+     Open GitHub Desktop, select **File > Clone Repository**, enter the repository URL: `https://github.com/frontierkodiak/cosm-c360-tools.git`, and choose a local folder to clone the repository.
+   - **Linux**:  
+     Since GitHub Desktop is not available for Linux, please clone the repository using the terminal:
+     ```bash
+     git clone https://github.com/frontierkodiak/cosm-c360-tools.git
+     cd cosm-c360-tools
+     ```
+2. **Install prerequisites**:
    ```bash
    # macOS (using Homebrew)
    brew install python ffmpeg
@@ -40,14 +54,8 @@ Our interactive mode will guide you through the entire process with simple promp
    sudo apt install python3 python3-pip ffmpeg
    ```
 
-2. **Download and run**:
+3. **Install dependencies and run**:
    ```bash
-   # Get the tool
-   curl -L https://github.com/frontierkodiak/cosm-c360-tools/archive/refs/heads/main.zip -o cosm-c360-tools.zip
-   unzip cosm-c360-tools.zip
-   cd cosm-c360-tools-main
-
-   # Install dependencies and run
    pip install -r requirements.txt
    python cosmos.py --interactive
    ```
