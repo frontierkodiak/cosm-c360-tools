@@ -166,8 +166,9 @@ def main():
     parser.add_argument('--force-software', action='store_true', help='Only use software encoding')
     args = parser.parse_args()
 
-    BASE_DIR = "/home/caleb/ladybird_failed_copy"
-    OUTPUT_DIR = os.path.join(BASE_DIR, "processed")
+    BASE_DIR = "/Users/carbon/Data/clients/ladybird/batch_0/raw"
+    # OUTPUT_DIR = os.path.join(BASE_DIR, "processed")
+    OUTPUT_DIR = "/Users/carbon/Data/clients/ladybird/batch_0/cosmos_output_standalone"
     print(f"Using base directory: {BASE_DIR}")
     print(f"Outputs will be saved to: {OUTPUT_DIR}")
 

@@ -5,6 +5,8 @@
 test_data/
 *_export.txt
 
+work/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

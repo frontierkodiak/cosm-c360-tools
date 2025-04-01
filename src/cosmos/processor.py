@@ -30,7 +30,33 @@ class EncoderType(Enum):
     NVIDIA_NVENC = "h264_nvenc"
     AMD_AMF = "h264_amf"
     INTEL_QSV = "h264_qsv"
+    APPLE_VIDEOTOOLBOX = "h264_videotoolbox"  # Apple Silicon hardware encoder
     SOFTWARE_X264 = "libx264"
+
+    @classmethod
+    def get_platform_encoders(cls) -> List['EncoderType']:
+        """Get list of encoders available on current platform"""
+        import platform
+        system = platform.system().lower()
+        
+        # Base encoders available on all platforms
+        encoders = [cls.SOFTWARE_X264]
+        
+        if system == 'darwin':
+            # Apple Silicon/Intel Mac
+            encoders.insert(0, cls.APPLE_VIDEOTOOLBOX)
+        elif system == 'linux':
+            # Linux with NVIDIA GPU
+            encoders.insert(0, cls.NVIDIA_NVENC)
+        elif system == 'windows':
+            # Windows with NVIDIA GPU
+            encoders.insert(0, cls.NVIDIA_NVENC)
+            # Windows with AMD GPU
+            encoders.insert(0, cls.AMD_AMF)
+            # Windows with Intel GPU
+            encoders.insert(0, cls.INTEL_QSV)
+            
+        return encoders
 
 @dataclass
 class ProcessingResult:
@@ -83,16 +109,19 @@ class VideoProcessor:
             # Parse output to detect available encoders
             output = result.stdout.lower()
             
-            # Check for hardware encoders first
-            if "h264_nvenc" in output:
-                available.append(EncoderType.NVIDIA_NVENC)
-            if "h264_amf" in output:
-                available.append(EncoderType.AMD_AMF)
-            if "h264_qsv" in output:
-                available.append(EncoderType.INTEL_QSV)
+            # Get platform-specific encoders
+            platform_encoders = EncoderType.get_platform_encoders()
             
-            # Software encoder should always be available
-            available.append(EncoderType.SOFTWARE_X264)
+            # Check each platform-specific encoder
+            for encoder in platform_encoders:
+                if encoder.value in output:
+                    available.append(encoder)
+                    self.logger.debug(f"Found encoder: {encoder.value}")
+            
+            # Always add software encoder as fallback
+            if EncoderType.SOFTWARE_X264 not in available:
+                available.append(EncoderType.SOFTWARE_X264)
+                self.logger.debug("Added software encoder as fallback")
             
         except subprocess.SubprocessError:
             # If ffmpeg query fails, default to software encoding
@@ -127,6 +156,15 @@ class VideoProcessor:
                 "-preset", "p7" if self.options.quality_mode == ProcessingMode.QUALITY else "p4",
                 "-qp", str(crf)
             ]
+        elif encoder == EncoderType.APPLE_VIDEOTOOLBOX:
+            # Apple Silicon hardware encoder settings
+            settings = [
+                "-c:v", "h264_videotoolbox",
+                "-allow_sw", "1",  # Allow software fallback if needed
+                "-realtime", "0",  # Disable realtime mode for better quality
+                "-b:v", "0",       # Use CRF mode
+                "-crf", str(crf)
+            ]
         elif encoder == EncoderType.SOFTWARE_X264:
             settings = [
                 "-c:v", "libx264",
@@ -149,7 +187,11 @@ class VideoProcessor:
     def _build_filter_complex(self, 
                             crop_overlap: int = 32) -> str:
         """Build ffmpeg filter complex for tile processing."""
-        filter_complex = (
+        # Log the output resolution we're scaling to
+        self.logger.debug(f"Building filter complex for output resolution: {self.options.output_resolution}")
+        
+        # Build the tile processing part (matching working version)
+        tile_processing = (
             # Crop overlapping regions from tiles
             "[0:v:0]crop=iw-{overlap}:ih-{overlap}:0:0[tl];"
             "[0:v:1]crop=iw-{overlap}:ih-{overlap}:{overlap}:0[tr];"
@@ -159,8 +201,15 @@ class VideoProcessor:
             "[tl][tr]hstack=2[top];"
             "[bl][br]hstack=2[bottom];"
             # Stack rows vertically
-            "[top][bottom]vstack=2"
+            "[top][bottom]vstack=2[full]"
         ).format(overlap=crop_overlap)
+        
+        # Add scaling to target resolution
+        width, height = self.options.output_resolution
+        scaling = f"[full]scale={width}:{height}:flags=lanczos[out]"
+        
+        # Combine the filters
+        filter_complex = f"{tile_processing};{scaling}"
         
         self.logger.debug(f"Generated filter complex:\n{filter_complex}")
         return filter_complex
@@ -169,6 +218,18 @@ class VideoProcessor:
         """Create temporary concat file for ffmpeg"""
         # Use platform-agnostic temp file creation
         temp_file = Path(tempfile.mktemp(suffix='.txt'))
+        
+        # Log segment information
+        self.logger.debug(f"Creating concat file with {len(segments)} segments")
+        for i, segment in enumerate(segments):
+            self.logger.debug(f"Segment {i}:")
+            self.logger.debug(f"  Directory: {segment.directory}")
+            self.logger.debug(f"  TS Files: {len(segment.ts_files)}")
+            for ts_file in segment.ts_files:
+                if not ts_file.exists():
+                    self.logger.error(f"TS file does not exist: {ts_file}")
+                else:
+                    self.logger.debug(f"  - {ts_file}")
         
         with open(temp_file, 'w', encoding='utf-8') as f:
             for segment in segments:
@@ -185,6 +246,21 @@ class VideoProcessor:
         try:
             output_path = self.output_dir / f"{clip_result.clip.name}.mp4"
             concat_file = self._create_concat_file(clip_result.segments)
+            
+            # Log processing parameters
+            self.logger.debug(f"Processing clip {clip_result.clip.name}")
+            self.logger.debug(f"Output resolution: {self.options.output_resolution}")
+            self.logger.debug(f"Quality mode: {self.options.quality_mode}")
+            self.logger.debug(f"Low memory mode: {self.options.low_memory}")
+            self.logger.debug(f"Created concat file at {concat_file}")
+            self.logger.debug(f"Output will be written to {output_path}")
+            
+            # Log concat file contents for debugging
+            with open(concat_file, 'r') as f:
+                self.logger.debug(f"Concat file contents:\n{f.read()}")
+                
+            success = False
+            error_messages = []
             
             # Determine thread count based on quality mode and low memory setting
             import multiprocessing
@@ -208,28 +284,6 @@ class VideoProcessor:
                 thread_count = None
                 self.logger.info(f"Using all available threads")
                 
-            self.logger.debug(f"Processing clip {clip_result.clip.name}")
-            self.logger.debug(f"Created concat file at {concat_file}")
-            self.logger.debug(f"Output will be written to {output_path}")
-            
-            # Log concat file contents for debugging
-            with open(concat_file, 'r') as f:
-                self.logger.debug(f"Concat file contents:\n{f.read()}")
-                
-            success = False
-            error_messages = []
-            
-            # Add memory-saving FFmpeg options based on quality mode
-            memory_opts = []
-            if self.options.low_memory or self.options.quality_mode in [ProcessingMode.LOW_MEMORY, ProcessingMode.MINIMAL]:
-                # Add options to reduce memory usage
-                memory_opts = [
-                    "-max_muxing_queue_size", "1024",  # Reduce muxing queue size
-                    "-tile-columns", "0",              # Disable tiling to save memory
-                    "-frame-parallel", "0"             # Disable parallel frame processing
-                ]
-                self.logger.info("Added memory-saving FFmpeg options")
-            
             for encoder in self._available_encoders:
                 try:
                     # Build base command
@@ -241,11 +295,23 @@ class VideoProcessor:
                     ]
                     
                     # Add memory-saving options if enabled
-                    if memory_opts:
-                        cmd.extend(memory_opts)
-                        
+                    memory_opts = []
+                    if self.options.low_memory or self.options.quality_mode in [ProcessingMode.LOW_MEMORY, ProcessingMode.MINIMAL]:
+                        # Add options to reduce memory usage
+                        memory_opts = [
+                            "-max_muxing_queue_size", "1024",  # Reduce muxing queue size
+                            "-tile-columns", "0",              # Disable tiling to save memory
+                            "-frame-parallel", "0"             # Disable parallel frame processing
+                        ]
+                        self.logger.info("Added memory-saving FFmpeg options")
+                    
                     # Add filter complex
-                    cmd.extend(["-filter_complex", self._build_filter_complex()])
+                    self.logger.debug(f"Building filter complex with output resolution: {self.options.output_resolution}")
+                    filter_complex = self._build_filter_complex()
+                    cmd.extend(["-filter_complex", filter_complex])
+                    
+                    # Map the output of the filter complex
+                    cmd.extend(["-map", "[out]"])
                     
                     # Add encoder settings with thread control
                     use_threads = thread_count if (
@@ -255,11 +321,12 @@ class VideoProcessor:
                     ) else None
                     
                     cmd.extend(self._get_encoder_settings(encoder, use_threads))
+                    cmd.extend(memory_opts)
                     cmd.append(str(output_path))
                     
                     # Run ffmpeg with proper subprocess configuration for platform
                     self.logger.info(f"Processing {clip_result.clip.name} with {encoder.value}")
-                    # Log the complete ffmpeg command
+                    # Log the complete ffmpeg command with all arguments
                     self.logger.debug(f"Executing ffmpeg command:\n{' '.join(cmd)}")
                     
                     # Create subprocess with platform-specific settings
