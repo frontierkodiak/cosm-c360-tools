@@ -23,6 +23,9 @@ def init_logging(level: str = "INFO", logfile: Optional[Path] = None) -> logging
     logger.addHandler(ch)
 
     if logfile:
+        # Create parent directories for log file if they don't exist
+        logfile.parent.mkdir(parents=True, exist_ok=True)
+        
         fh = logging.FileHandler(logfile, encoding='utf-8')
         fh.setLevel(getattr(logging, level.upper(), logging.INFO))
         fh.setFormatter(formatter)
