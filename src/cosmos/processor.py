@@ -13,7 +13,7 @@ from .manifest import ClipInfo
 class ProcessingMode(Enum):
     QUALITY = "quality"        # Highest quality, all threads
     BALANCED = "balanced"      # Good quality, all threads
-    PERFORMANCE = "speed"      # Faster, all threads
+    PERFORMANCE = "performance"      # Faster, all threads
     LOW_MEMORY = "low_memory"  # Half threads
     MINIMAL = "minimal"        # Single thread
 
