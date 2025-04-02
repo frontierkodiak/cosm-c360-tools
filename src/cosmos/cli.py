@@ -4,6 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
+import logging
+import os
 
 from .utils import (
     init_logging,
@@ -97,6 +99,9 @@ def run_interactive_mode(config: Dict[str, Any]) -> Dict[str, Any]:
     Uses questionary for cross-platform interactive prompts.
     If questionary is not installed, print an error and exit.
     """
+    # Get logger instance for this function
+    logger = logging.getLogger(__name__)
+
     if questionary is None:
         print_error("Interactive mode requested but 'questionary' is not installed.")
         sys.exit(1)
@@ -136,29 +141,27 @@ def run_interactive_mode(config: Dict[str, Any]) -> Dict[str, Any]:
     if job_name:
         config["job_name"] = job_name
 
-    # Prompt for input directory
-    input_dir = questionary.path(
+    # Prompt for input directory (keep as string for now)
+    input_dir_interactive = questionary.path(
         "Input directory containing raw segments:",
         default=str(config.get("input_dir", ""))
     ).ask()
 
-    if not input_dir:
+    if not input_dir_interactive:
         print_error("No input directory specified.")
         sys.exit(1)
-    
-    config["input_dir"] = input_dir
+    config["input_dir"] = input_dir_interactive  # Store the string
 
-    # Prompt for output base directory
-    output_dir = questionary.path(
+    # Prompt for output base directory (keep as string for now)
+    output_dir_interactive = questionary.path(
         "Output base directory (outputs will go to <output_dir>/<job_name>/):",
         default=str(config.get("output_dir", ""))
     ).ask()
 
-    if not output_dir:
+    if not output_dir_interactive:
         print_error("No output directory specified.")
         sys.exit(1)
-        
-    config["output_dir"] = output_dir
+    config["output_dir"] = output_dir_interactive  # Store the string
 
     # Confirm ffmpeg available
     if not check_ffmpeg():
@@ -301,8 +304,15 @@ def run_interactive_mode(config: Dict[str, Any]) -> Dict[str, Any]:
     # 4. Review and Save
     print_info("\nReview your settings:")
     print_info(f"  Job Name: {config['job_name']}")
-    print_info(f"  Input Directory: {config['input_dir']}")
-    print_info(f"  Output Directory: {config['output_dir']}/{config['job_name']}/")
+    print_info(f"  Input Directory: {config['input_dir']}")  # Log the string value
+
+    # Use Path temporarily for display, but keep string in config for now
+    try:
+        job_output_dir = Path(config['output_dir']) / config['job_name']
+        print_info(f"  Output Directory: {job_output_dir}")
+    except Exception:
+        print_info(f"  Output Directory: {config['output_dir']} / {config['job_name']}")  # Fallback display
+    
     print_info(f"  Output Resolution: {config['output_resolution']['width']}x{config['output_resolution']['height']}")
     print_info(f"  Quality Mode: {config['quality_mode']}")
     print_info(f"  Low Memory Mode: {'Enabled' if config['low_memory'] else 'Disabled'}")
@@ -338,7 +348,7 @@ def run_interactive_mode(config: Dict[str, Any]) -> Dict[str, Any]:
         save_config(config_path, config)
         print_info(f"Configuration saved to {config_path}")
 
-    return config
+    return config  # Return config with paths still as strings
 
 def run_cli() -> Dict[str, Any]:
     """
@@ -346,6 +356,11 @@ def run_cli() -> Dict[str, Any]:
     load configuration files if provided, and return a final config dict
     for use by cosmos.py.
     """
+    # Get logger instance for this function
+    logger = logging.getLogger(__name__)
+    # Initialize root logging (will be reconfigured if log file specified)
+    init_logging(level="DEBUG")
+    
     args = parse_args()
 
     # Load config if provided
@@ -364,31 +379,23 @@ def run_cli() -> Dict[str, Any]:
     
     config = load_config(config_path) if config_path else {}
 
-    # CLI args override config values
-    if args.log_level:
-        config["log_level"] = args.log_level
-    if args.log_file:
-        config["log_file"] = args.log_file
-    if args.input_dir:
-        config["input_dir"] = args.input_dir
-    if args.output_dir:
-        config["output_dir"] = args.output_dir
-    if args.manifest:
-        config["manifest"] = args.manifest
-    if args.job_name:
-        config["job_name"] = args.job_name
-    if args.output_resolution:
-        config["output_resolution"] = args.output_resolution
-    if args.quality_mode:
-        config["quality_mode"] = args.quality_mode
-    if args.crf:
-        config["crf"] = args.crf
-    if args.low_memory:
-        config["low_memory"] = args.low_memory
+    # Update logging level and file *after* loading config and parsing args
+    final_log_level = args.log_level or config.get("log_level", "INFO")
+    final_log_file = args.log_file or config.get("log_file", None)
+    if final_log_file:
+        init_logging(level=final_log_level, logfile=Path(final_log_file))
+    else:
+        init_logging(level=final_log_level)
 
-    # Initialize logging early so we can log further steps
-    logfile = Path(config["log_file"]) if "log_file" in config else None
-    logger = init_logging(level=config.get("log_level", "INFO"), logfile=logfile)
+    # Apply CLI overrides (paths are still strings here)
+    if args.input_dir: config["input_dir"] = args.input_dir
+    if args.output_dir: config["output_dir"] = args.output_dir
+    if args.manifest: config["manifest"] = args.manifest
+    if args.job_name: config["job_name"] = args.job_name
+    if args.output_resolution: config["output_resolution"] = args.output_resolution
+    if args.quality_mode: config["quality_mode"] = args.quality_mode
+    if args.crf: config["crf"] = args.crf
+    if args.low_memory: config["low_memory"] = True  # Override if CLI flag is set
 
     # Handle special commands that do not require proceeding to processing
     if args.check_updates:
@@ -397,16 +404,56 @@ def run_cli() -> Dict[str, Any]:
 
     # If interactive mode requested, run interactive prompts
     if args.interactive:
-        config = run_interactive_mode(config)
+        config = run_interactive_mode(config)  # This updates config dict
 
-    # Validate directories are set
+    # --- Centralized Path Processing and Validation ---
+    # Ensure input_dir exists and is processed into a Path object
     if "input_dir" not in config or not config["input_dir"]:
-        print_error("Input directory not specified. Use --input-dir or run in interactive mode.")
+        print_error("Input directory not specified.")
         sys.exit(1)
+    else:
+        input_dir_str = str(config["input_dir"]).strip()
+        logger.debug(f"Processing input_dir string: '{input_dir_str}'")
+        if os.name == 'nt' and input_dir_str.startswith('\\') and not input_dir_str.startswith('\\\\'):
+            input_dir_str = '\\' + input_dir_str
+            logger.debug(f"Corrected potential UNC path: '{input_dir_str}'")
+        try:
+            config["input_dir"] = Path(input_dir_str)
+            logger.debug(f"Converted input_dir to Path: {config['input_dir']}")
+            if not config["input_dir"].is_dir():
+                logger.error(f"Input directory does not exist or is not a directory: {config['input_dir']}")
+                print_error(f"Invalid input directory: {config['input_dir']}")
+                sys.exit(1)
+        except Exception as e:
+            logger.error(f"Failed to create valid Path object for input directory '{input_dir_str}': {e}")
+            print_error(f"Invalid input directory path: {input_dir_str}")
+            sys.exit(1)
 
+    # Ensure output_dir exists and is processed into a Path object
     if "output_dir" not in config or not config["output_dir"]:
-        print_error("Output directory not specified. Use --output-dir or run in interactive mode.")
+        print_error("Output directory not specified.")
         sys.exit(1)
+    else:
+        try:
+            config["output_dir"] = Path(str(config["output_dir"]).strip())
+            logger.debug(f"Converted output_dir to Path: {config['output_dir']}")
+        except Exception as e:
+            logger.error(f"Failed to create valid Path object for output directory '{config['output_dir']}': {e}")
+            print_error(f"Invalid output directory path: {config['output_dir']}")
+            sys.exit(1)
+
+    # Ensure manifest (if provided) is processed into a Path object
+    if "manifest" in config and config["manifest"] and not isinstance(config["manifest"], Path):
+        try:
+            config["manifest"] = Path(str(config["manifest"]).strip())
+            logger.debug(f"Converted manifest to Path: {config['manifest']}")
+            # We don't check if it exists here, manifest finding/validation does that
+        except Exception as e:
+            logger.error(f"Failed to create valid Path object for manifest '{config['manifest']}': {e}")
+            print_error(f"Invalid manifest path: {config['manifest']}")
+            sys.exit(1)
+
+    # --- End Centralized Path Processing ---
 
     # Ensure job_name is set (required for output directory structure)
     if "job_name" not in config or not config["job_name"]:
@@ -433,19 +480,20 @@ def run_cli() -> Dict[str, Any]:
         save_config(save_path, config)
         logger.info(f"Configuration saved to {save_path}")
 
-    logger.info("CLI argument resolution complete. Ready to proceed with processing pipeline.")
-    logger.info(f"Job Name: {config.get('job_name', 'default_job')}")
-    logger.info(f"Input Directory: {config['input_dir']}")
-    logger.info(f"Output Directory: {config['output_dir']}/{config.get('job_name', 'default_job')}/")
-    if "manifest" in config:
-        logger.info(f"Manifest: {config['manifest']}")
-    logger.info(f"Output Resolution: {config['output_resolution']['width']}x{config['output_resolution']['height']}")
-    logger.info(f"Quality Mode: {config['quality_mode']}")
-    logger.info(f"Low Memory Mode: {'Enabled' if config.get('low_memory', False) else 'Disabled'}")
+    # Log final config values
+    logger.info("Final configuration ready:")
+    logger.info(f"  Job Name: {config.get('job_name', 'default_job')}")
+    logger.info(f"  Input Directory: {config['input_dir']}")
+    job_output_dir = config['output_dir'] / config.get('job_name', 'default_job')
+    logger.info(f"  Output Directory: {job_output_dir}")
+    if config.get("manifest"): logger.info(f"  Manifest: {config['manifest']}")
+    logger.info(f"  Output Resolution: {config['output_resolution']['width']}x{config['output_resolution']['height']}")
+    logger.info(f"  Quality Mode: {config['quality_mode']}")
+    logger.info(f"  Low Memory Mode: {'Enabled' if config.get('low_memory', False) else 'Disabled'}")
     if "crf" in config and config["crf"] is not None:
-        logger.info(f"Custom CRF: {config['crf']}")
+        logger.info(f"  Custom CRF: {config['crf']}")
 
     # Add self_test key so cosmos.py can check and handle it
     config["self_test"] = args.self_test
 
-    return config
+    return config  # Return config with paths guaranteed to be Path objects

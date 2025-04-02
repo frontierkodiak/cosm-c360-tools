@@ -6,6 +6,7 @@ test_data/
 *_export.txt
 
 work/
+.output/
 
 CLAUDE.md
 

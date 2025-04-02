@@ -217,25 +217,46 @@ class ManifestParser:
 
 def find_manifest(base_dir: Path) -> Optional[Path]:
     """
-    Find the COSM manifest XML file in a directory.
-    
+    Find the COSM manifest XML file in the specified directory.
+
     Args:
-        base_dir: Directory to search for manifest
-        
+        base_dir: Directory Path object to search for manifest
+
     Returns:
         Path to manifest if exactly one is found, None otherwise
-        
+
     Raises:
         ValueError: If multiple manifest files are found
     """
-    manifests = list(base_dir.glob("**/*.xml"))
-    
-    if not manifests:
+    logger = logging.getLogger(__name__)  # Get named logger
+
+    # Log the state of base_dir as received
+    logger.debug(f"Searching for manifest in received base_dir: '{base_dir}' (type: {type(base_dir)})")
+    if not base_dir.is_dir():
+        logger.error(f"The provided base_dir '{base_dir}' is not a valid directory.")
         return None
-    
+
+    # --- Simplified Search ---
+    logger.debug(f"Attempting direct glob search: {base_dir}/*.xml")
+    try:
+        manifests = list(base_dir.glob("*.xml"))
+        logger.debug(f"Direct glob found {len(manifests)} XML files: {manifests}")
+    except Exception as e:
+        # Log potential errors during glob, e.g., permission issues
+        logger.error(f"Error during glob search in '{base_dir}': {e}")
+        return None
+    # --- End Simplified Search ---
+
+    if not manifests:
+        logger.warning(f"No *.xml manifest files found directly in {base_dir}")
+        return None
+
     if len(manifests) > 1:
+        logger.error(f"Multiple *.xml manifest files found directly in {base_dir}: {manifests}")
         raise ValueError(
-            f"Multiple manifest files found: {', '.join(str(p) for p in manifests)}"
+            f"Multiple manifest files found in '{base_dir}': {', '.join(str(p.name) for p in manifests)}"
         )
-    
-    return manifests[0]
+
+    manifest_path = manifests[0]
+    logger.info(f"Found manifest: {manifest_path}")
+    return manifest_path

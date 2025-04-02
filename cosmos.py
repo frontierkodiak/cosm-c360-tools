@@ -33,7 +33,8 @@ def get_system_info():
 def main():
     config = run_cli()
 
-    input_dir = Path(config["input_dir"])
+    # Use the input_dir directly since it's already properly handled in cli.py
+    input_dir = config["input_dir"]
     base_output_dir = Path(config["output_dir"])
     job_name = config.get("job_name", "default_job")
     

@@ -11,17 +11,22 @@ from typing import Any, Dict, Optional
 __version__ = "0.2.1"  # Just an example version
 
 def init_logging(level: str = "INFO", logfile: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("cosmos")
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    logger.handlers.clear()
-    logger.propagate = False
-
+    """Initialize logging configuration for the entire application."""
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root_logger.handlers.clear()
+    
+    # Create formatters
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    
+    # Add console handler
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(getattr(logging, level.upper(), logging.INFO))
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     ch.setFormatter(formatter)
-    logger.addHandler(ch)
-
+    root_logger.addHandler(ch)
+    
+    # Add file handler if logfile specified
     if logfile:
         # Create parent directories for log file if they don't exist
         logfile.parent.mkdir(parents=True, exist_ok=True)
@@ -29,8 +34,11 @@ def init_logging(level: str = "INFO", logfile: Optional[Path] = None) -> logging
         fh = logging.FileHandler(logfile, encoding='utf-8')
         fh.setLevel(getattr(logging, level.upper(), logging.INFO))
         fh.setFormatter(formatter)
-        logger.addHandler(fh)
-
+        root_logger.addHandler(fh)
+    
+    # Create and return the main application logger
+    logger = logging.getLogger("cosmos")
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     return logger
 
 def get_configs_dir() -> Path:

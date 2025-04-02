@@ -1,0 +1,15 @@
+{
+  "log_level": "DEBUG",
+  "job_name": "win_test_4k",
+  "input_dir": " \\\\blade\\datasets\\dataZoo\\clients\\ladybird\\batch_0\\raw",
+  "output_dir": "C:\\Users\\front\\Documents\\GitHub\\cosm-c360-tools\\.output",
+  "output_resolution": {
+    "width": 3840,
+    "height": 2160
+  },
+  "quality_mode": "balanced",
+  "low_memory": false,
+  "crf": null,
+  "config_name": "win_test_4k",
+  "config_description": ""
+}
