@@ -1,0 +1,15 @@
+{
+  "job_name": "mac_test_2",
+  "input_dir": "/Users/carbon/Data/clients/ladybird/batch_0/raw",
+  "output_dir": "/Users/carbon/Data/clients/ladybird/batch_0/cosmos_output",
+  "log_level": "DEBUG",
+  "output_resolution": {
+    "width": 3840,
+    "height": 2160
+  },
+  "quality_mode": "balanced",
+  "low_memory": false,
+  "crf": null,
+  "config_name": "mac_test_2",
+  "config_description": ""
+}

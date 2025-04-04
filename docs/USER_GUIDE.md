@@ -73,7 +73,18 @@ This involves downloading, extracting, and telling Windows where to find the pro
 3.  A window will pop up. **IMPORTANT:** Click "**Browse...**", navigate to your main `C:` drive in the left panel, and click "**Make New Folder**" (or right-click -> New -> Folder). Name this new folder exactly `ffmpeg`. Click on the `ffmpeg` folder you just created so it's selected, then click "**Select Folder**". The extraction path box should now say `C:\ffmpeg`.
     ![Extract FFmpeg to C:\ffmpeg](assets/win_ffmpeg_extract_dialog.png)
 4.  Make sure the "Show extracted files when complete" box is checked.
-5.  Click "**Extract**". A new folder window `C:\ffmpeg` should open. Inside, you'll see another folder starting with `ffmpeg-`. Open that folder. Inside *that* folder, you should see a folder named `bin`. This `bin` folder contains the `ffmpeg.exe` program we need. The full path is `C:\ffmpeg\bin`.
+5.  Click "**Extract**". A new folder window `C:\ffmpeg` should open.
+
+**IMPORTANT - Understanding the Folder Structure:**
+After extraction, you'll see this folder structure:
+```
+C:\ffmpeg\                         <- The folder you created
+    └── ffmpeg-X.Y.Z-essentials_build\  <- Version-specific folder (e.g., ffmpeg-7.1.1-essentials_build)
+        ├── bin\                   <- THIS is the folder containing ffmpeg.exe
+        ├── doc\
+        └── presets\
+```
+The exact version number (X.Y.Z) in the folder name will depend on when you downloaded FFmpeg. **Take note of your actual folder name - you'll need it in the next step!**
 
 **c. Tell Windows Where to Find FFmpeg (Adding to PATH):**
 This step makes `ffmpeg` available from any Command Prompt window.
@@ -92,8 +103,15 @@ This step makes `ffmpeg` available from any Command Prompt window.
     4.  In the new "Environment Variables" window, look at the **bottom section** labeled "**System variables**". Find "**Path**" in the list, click it once, then click "**Edit...**".
         ![Select Path and click Edit](assets/win_ffmpeg_edit_path_variable.png)
     5.  In the "Edit environment variable" window, click the "**New**" button.
-    6.  A new blank line appears. Type **exactly** this: `C:\ffmpeg\bin`
-        ![Add C:\ffmpeg\bin to Path](assets/win_ffmpeg_add_path_entry.png)
+    6.  A new blank line appears. Type the **FULL** path to your `bin` folder. It will look like this, but with your actual version number:
+        ```
+        C:\ffmpeg\ffmpeg-X.Y.Z-essentials_build\bin
+        ```
+        For example, if you downloaded version 7.1.1, you would type:
+        ```
+        C:\ffmpeg\ffmpeg-7.1.1-essentials_build\bin
+        ```
+        ![Add FFmpeg bin path](assets/win_ffmpeg_add_path_entry.png)
     7.  Click "**OK**" on this "Edit..." window.
     8.  Click "**OK**" on the "Environment Variables" window.
     9.  Click "**OK**" on the "System Properties" window.
@@ -102,7 +120,12 @@ This step makes `ffmpeg` available from any Command Prompt window.
 1.  **IMPORTANT:** Close any Command Prompt windows you have open. Open a **new** Command Prompt (search `cmd` in Start Menu).
 2.  Type `ffmpeg -version` and press Enter.
 3.  You should see several lines of text starting with `ffmpeg version ...`. This means it's working!
-    *(If you see an error like "'ffmpeg' is not recognized...", carefully double-check step c.6 and make sure you clicked OK on all windows. You might need to restart your computer.)*
+    
+    If you see an error like "'ffmpeg' is not recognized...", here are the most common fixes:
+    - Double-check that you used the **complete** path including your version number (not just `C:\ffmpeg\bin`)
+    - Make sure you clicked "OK" on all three windows when setting the PATH
+    - Try restarting your computer
+    - If it still doesn't work, open Command Prompt and type `echo %PATH%`. Look for your FFmpeg path in the output.
 
 #### macOS:
 
